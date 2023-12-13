@@ -92,7 +92,7 @@ func main() {
 		level.Error(logger).Log("msg", "Error registering version collector", "err", err) // #nosec G104
 	}
 
-	level.Info(logger).Log("msg", "Starting foreman-exporter", "version", version.Info()) // #nosec G104
+	level.Info(logger).Log("msg", "Starting foreman-exporter", "version", version.Info())   // #nosec G104
 	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext()) // #nosec G104
 
 	// Regist http handler
@@ -181,7 +181,7 @@ func main() {
 	}
 
 	server := &http.Server{
-		ReadTimeout: 120 * time.Second,
+		ReadTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

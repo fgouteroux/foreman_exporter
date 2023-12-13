@@ -41,7 +41,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 		// If another replica is the leader, don't expose any metrics from this one.
 		isLeaderNow, err := isLeader(c.RingConfig)
 		if err != nil {
-			level.Warn(c.Logger).Log("msg", "Failed to determine ring leader", "err", err)  // #nosec G104
+			level.Warn(c.Logger).Log("msg", "Failed to determine ring leader", "err", err) // #nosec G104
 			return
 		}
 		if !isLeaderNow {

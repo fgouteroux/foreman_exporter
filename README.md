@@ -1,4 +1,4 @@
-# foreman-exporter
+# foreman_exporter
 
 ## Foreman Prometheus Exporter
 

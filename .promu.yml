@@ -1,6 +1,4 @@
 go:
-    # Whenever the Go version is updated here, .circle/config.yml and
-    # .promu-cgo.yml should also be updated.
     version: 1.20
 repository:
     path: github.com/fgouteroux/foreman_exporter
