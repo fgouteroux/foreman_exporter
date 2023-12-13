@@ -44,4 +44,4 @@ jobs:
       - uses: prometheus/promci@v0.1.0
       - uses: ./.github/promci/actions/publish_release
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.TOKEN }}
