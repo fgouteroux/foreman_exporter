@@ -2,6 +2,7 @@ package foreman
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,17 +177,21 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 	l.WithFields(fields(keysAndValues)).Warn(msg)
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, concurrency, limit int64, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
+func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
 
 	reg.MustRegister(
 		hostsFactsHistVecMetric,
 		hostsFactsCounterMetric,
 	)
 
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, // #nosec G402
+	}
+
 	// Wrap the default RoundTripper with middleware.
 	roundTripper := promhttp.InstrumentRoundTripperInFlight(inFlightGaugeMetric,
 		promhttp.InstrumentRoundTripperCounter(counterMetric,
-			promhttp.InstrumentRoundTripperDuration(histVecMetric, http.DefaultTransport),
+			promhttp.InstrumentRoundTripperDuration(histVecMetric, transport),
 		),
 	)
 

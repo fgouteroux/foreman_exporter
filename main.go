@@ -32,9 +32,10 @@ var (
 	prefixPath             = kingpin.Flag("web.prefix-path", "Prefix path for all http requests.").Default("").String()
 	webConfig              = webflag.AddFlags(kingpin.CommandLine, ":11111")
 
-	baseURL  = kingpin.Flag("url", "Foreman url").Envar("FOREMAN_URL").Required().URL()
-	username = kingpin.Flag("username", "Foreman username").Envar("FOREMAN_USERNAME").Required().String()
-	password = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
+	baseURL       = kingpin.Flag("url", "Foreman url").Envar("FOREMAN_URL").Required().URL()
+	username      = kingpin.Flag("username", "Foreman username").Envar("FOREMAN_USERNAME").Required().String()
+	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
+	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
 	concurrency = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
 	limit       = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
@@ -143,6 +144,7 @@ func main() {
 		*baseURL,
 		*username,
 		*password,
+		*skipTLSVerify,
 		*concurrency,
 		*limit,
 		*collectorHostFactSearch,

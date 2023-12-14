@@ -86,7 +86,7 @@ As foreman host facts collector metrics could return many metrics (depending of 
 ```
 # HELP foreman_exporter_host_facts_info Foreman host facts
 # TYPE foreman_exporter_host_facts_info gauge
-foreman_exporter_host_facts_info{fqdn="server.example.com", operatingsystem="RedHat",operatingsystemmajrelease="9",operatingsystemrelease="9.2"} 1
+foreman_exporter_host_facts_info{name="server.example.com", operatingsystem="RedHat",operatingsystemmajrelease="9",operatingsystemrelease="9.2"} 1
 ```
 
 This collector return metrics to a dedicated endpoint `/hosts-facts-metrics`.

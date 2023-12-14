@@ -111,7 +111,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			// clear data
 			data = nil
 			for host, facts := range hostsFacts {
-				labels := map[string]string{"fqdn": host}
+				labels := map[string]string{"name": host}
 				for factName, factValue := range facts {
 
 					replacer := strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
