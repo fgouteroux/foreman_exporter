@@ -136,7 +136,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 				if hostsFactsError == nil {
 					// update the cache
-					updateHostsFactsKV(c.RingConfig.kvStore, string(content), c.CacheConfig.ExpiresTTL)
+					c.updateKV(string(content))
 				}
 			} else {
 				localCache.Set(hostsFactsKey, data, c.CacheConfig.ExpiresTTL)
@@ -169,32 +169,25 @@ func hostFactCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {
 	)
 }
 
-func updateHostsFactsKV(store *memberlist.KV, content string, expiresTTL time.Duration) {
+func (c HostFactCollector) updateKV(content string) {
 	cache := &Cache{
 		Content:   content,
 		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(expiresTTL),
+		ExpiresAt: time.Now().Add(c.CacheConfig.ExpiresTTL),
 	}
-	val, _ := json.Marshal(cache)
+
+	val, err := JSONCodec.Encode(cache)
+	if err != nil {
+		level.Error(c.Logger).Log("msg", fmt.Sprintf("failed to encode data with '%s'", JSONCodec.CodecID()), "err", err) // #nosec G104
+		return
+	}
+
 	msg := memberlist.KeyValuePair{
 		Key:   hostsFactsKey,
 		Value: val,
-		Codec: "jsonCodec",
+		Codec: JSONCodec.CodecID(),
 	}
 
 	msgBytes, _ := msg.Marshal()
-	store.NotifyMsg(msgBytes)
+	c.RingConfig.kvStore.NotifyMsg(msgBytes)
 }
-
-/*
-func deleteHostsFactsKV(store *memberlist.KV) {
-	msg := memberlist.KeyValuePair{
-		Key:   hostsFactsKey,
-		Value: []byte("{}"),
-		Codec: "jsonCodec",
-	}
-
-	msgBytes, _ := msg.Marshal()
-	store.NotifyMsg(msgBytes)
-}
-*/
