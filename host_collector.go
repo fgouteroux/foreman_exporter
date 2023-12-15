@@ -45,10 +45,10 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 			return
 		}
 		if !isLeaderNow {
-			level.Debug(c.Logger).Log("msg", "not the ring leader") // #nosec G104
+			level.Debug(c.Logger).Log("msg", "skipping metrics collection as this node is not the ring leader") // #nosec G104
 			return
 		}
-		level.Debug(c.Logger).Log("msg", "ring leader") // #nosec G104
+		level.Debug(c.Logger).Log("msg", "processing metrics collection as this node is the ring leader") // #nosec G104
 	}
 
 	var errVal float64

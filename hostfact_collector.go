@@ -41,59 +41,64 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			return
 		}
 		if !isLeaderNow {
-			level.Debug(c.Logger).Log("msg", "not the ring leader") // #nosec G104
+			level.Debug(c.Logger).Log("msg", "skipping metrics collection as this node is not the ring leader") // #nosec G104
 			return
 		}
-		level.Debug(c.Logger).Log("msg", "ring leader") // #nosec G104
+		level.Debug(c.Logger).Log("msg", "processing metrics collection as this node is the ring leader") // #nosec G104
 
-		ctx := context.Background()
-		cached, err := c.RingConfig.jsonClient.Get(ctx, hostsFactsKey)
-		if err != nil {
-			level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to get '%s' key from kvStore", hostsFactsKey), "err", err) // #nosec G104
-		}
-
-		if cached != nil {
-
-			if time.Now().After(cached.(*Cache).ExpiresAt) {
-				level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
-				expired = true
-			} else {
-				found = true
+		if c.CacheConfig.Enabled {
+			ctx := context.Background()
+			cached, err := c.RingConfig.jsonClient.Get(ctx, hostsFactsKey)
+			if err != nil {
+				level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to get '%s' key from kvStore", hostsFactsKey), "err", err) // #nosec G104
 			}
 
-			content := cached.(*Cache).Content
-			// zstd decompress data
-			if *cacheCompressionEnabled {
-				contentUnquoted, _ := strconv.Unquote(content)
-				decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-				decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
+			if cached != nil {
+
+				if time.Now().After(cached.(*Cache).ExpiresAt) {
+					level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
+					expired = true
+				} else {
+					found = true
+				}
+
+				content := cached.(*Cache).Content
+				// zstd decompress data
+				if *cacheCompressionEnabled {
+					contentUnquoted, _ := strconv.Unquote(content)
+					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+					decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
+					if err != nil {
+						level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
+						hostFactCollectorScrapeError(ch, 1.0)
+						return
+					}
+					content = string(decoded)
+				}
+
+				err = json.Unmarshal([]byte(content), &data)
 				if err != nil {
-					level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
+					level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
 					hostFactCollectorScrapeError(ch, 1.0)
 					return
 				}
-				content = string(decoded)
-			}
-
-			err = json.Unmarshal([]byte(content), &data)
-			if err != nil {
-				level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
-				hostFactCollectorScrapeError(ch, 1.0)
-				return
 			}
 		}
 	} else {
-		// Try to get the value from the local cache
-		cached, ok := localCache.Get(hostsFactsKey)
-		if ok {
-			if time.Now().After(cached.ExpiresAt) {
-				level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
-				expired = true
-			} else {
-				found = true
-			}
 
-			data = cached.Value.([]map[string]string)
+		if c.CacheConfig.Enabled {
+			// Try to get the value from the local cache
+			cached, ok := localCache.Get(hostsFactsKey)
+			if ok {
+				if time.Now().After(cached.ExpiresAt) {
+					level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
+					expired = true
+				} else {
+					found = true
+				}
+
+				data = cached.Value.([]map[string]string)
+			}
 		}
 	}
 
@@ -126,7 +131,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			// Add to the cache
-			if c.RingConfig.enabled {
+			if c.RingConfig.enabled && c.CacheConfig.Enabled {
 				content, _ := json.Marshal(data)
 				if *cacheCompressionEnabled {
 					// use zstd to compress data
@@ -136,9 +141,11 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 				if hostsFactsError == nil {
 					// update the cache
+					level.Debug(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
 					c.updateKV(string(content))
 				}
-			} else {
+			} else if c.CacheConfig.Enabled {
+				level.Debug(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
 				localCache.Set(hostsFactsKey, data, c.CacheConfig.ExpiresTTL)
 			}
 		}
