@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/version"
 
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/sirupsen/logrus"
@@ -73,6 +74,7 @@ var (
 		},
 		[]string{"status"},
 	)
+	UserAgent = fmt.Sprintf("foreman_exporter/%s", version.Version)
 )
 
 func init() {
@@ -234,6 +236,8 @@ func (c *HTTPClient) DoWithContext(ctx context.Context, r *http.Request, data in
 	}
 
 	rreq = rreq.WithContext(ctx)
+
+	rreq.Header.Add("User-Agent", UserAgent)
 
 	res, err := c.client.Do(rreq)
 
