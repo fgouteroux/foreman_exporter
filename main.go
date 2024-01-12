@@ -40,6 +40,9 @@ var (
 	concurrency = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
 	limit       = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
 
+	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
+	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors").Bool()
+
 	collectorsEnabled               = kingpin.Flag("collector", "collector to enabled (repeatable), choices: [host, hostfact]").Default("host").Enums("host", "hostfact")
 	collectorHostLabelsIncludeRegex = kingpin.Flag("collector.host.labels-include", "host labels to include (regex)").Regexp()
 	collectorHostLabelsExcludeRegex = kingpin.Flag("collector.host.labels-exclude", "host labels to exclude (regex)").Regexp()

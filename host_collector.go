@@ -11,6 +11,8 @@ import (
 	"github.com/fgouteroux/foreman_exporter/foreman"
 )
 
+var hostCollectorLock = make(chan struct{}, 1)
+
 type HostCollector struct {
 	Client                *foreman.HTTPClient
 	RingConfig            ExporterRing
@@ -37,6 +39,18 @@ type HostLabels struct {
 func (c HostCollector) Describe(_ chan<- *prometheus.Desc) {}
 
 func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
+	if *collectorsLock {
+		// lock and return directly if another request is in progress
+		select {
+		case hostCollectorLock <- struct{}{}:
+			defer func() { <-hostCollectorLock }()
+			hostCollectorInflightRequestBlocking(ch, 0)
+		default:
+			hostCollectorInflightRequestBlocking(ch, 1)
+			return
+		}
+	}
+
 	if c.RingConfig.enabled {
 		// If another replica is the leader, don't expose any metrics from this one.
 		isLeaderNow, err := isLeader(c.RingConfig)
@@ -106,5 +120,16 @@ func hostCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {
 			nil, nil,
 		),
 		prometheus.GaugeValue, errVal,
+	)
+}
+
+func hostCollectorInflightRequestBlocking(ch chan<- prometheus.Metric, val float64) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			"foreman_exporter_host_inflight_blocking_request",
+			"",
+			nil, nil,
+		),
+		prometheus.GaugeValue, val,
 	)
 }

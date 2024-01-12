@@ -18,7 +18,10 @@ import (
 	"github.com/fgouteroux/foreman_exporter/foreman"
 )
 
-var hostsFactsKey = "collectors/host-fact"
+var (
+	hostsFactsKey          = "collectors/host-fact"
+	hostFactsCollectorLock = make(chan struct{}, 1)
+)
 
 type HostFactCollector struct {
 	Client      *foreman.HTTPClient
@@ -30,6 +33,18 @@ type HostFactCollector struct {
 func (c HostFactCollector) Describe(_ chan<- *prometheus.Desc) {}
 
 func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
+	if *collectorsLock {
+		// lock and return directly if another request is in progress
+		select {
+		case hostFactsCollectorLock <- struct{}{}:
+			defer func() { <-hostFactsCollectorLock }()
+			hostFactCollectorInflightRequestBlocking(ch, 0)
+		default:
+			hostFactCollectorInflightRequestBlocking(ch, 1)
+			return
+		}
+	}
+
 	var found bool
 	var expired bool
 	var data []map[string]string
@@ -173,6 +188,17 @@ func hostFactCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {
 			nil, nil,
 		),
 		prometheus.GaugeValue, errVal,
+	)
+}
+
+func hostFactCollectorInflightRequestBlocking(ch chan<- prometheus.Metric, val float64) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			"foreman_exporter_host_facts_inflight_blocking_request",
+			"",
+			nil, nil,
+		),
+		prometheus.GaugeValue, val,
 	)
 }
 
