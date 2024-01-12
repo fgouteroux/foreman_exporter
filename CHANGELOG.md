@@ -1,3 +1,9 @@
+## 0.0.4 / 2024-01-12
+
+* [FEATURE] add user agent http header in foreman requests
+* [FEATURE] add flag to lock concurrent requests on collectors
+
+
 ## 0.0.3 / 2023-12-15
 
 * [ENHANCEMENT] logging messages more clear about skipping metrics collection
