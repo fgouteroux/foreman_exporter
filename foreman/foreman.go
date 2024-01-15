@@ -141,6 +141,7 @@ type HTTPClient struct {
 	onRequestCompleted   RequestCompletionCallback
 	Concurrency          int64
 	Limit                int64
+	Search               string
 	SearchHostFact       string
 	IncludeHostFactRegex *regexp.Regexp
 	ExcludeHostFactRegex *regexp.Regexp
@@ -179,7 +180,7 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 	l.WithFields(fields(keysAndValues)).Warn(msg)
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
+func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
 
 	reg.MustRegister(
 		hostsFactsHistVecMetric,
@@ -214,6 +215,7 @@ func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bo
 		Password:             password,
 		Concurrency:          concurrency,
 		Limit:                limit,
+		Search:               search,
 		SearchHostFact:       searchHostFact,
 		IncludeHostFactRegex: includeHostFactRegex,
 		ExcludeHostFactRegex: excludeHostFactRegex,
@@ -268,13 +270,12 @@ func (c *HTTPClient) DoWithContext(ctx context.Context, r *http.Request, data in
 	return errors.New(string(body))
 }
 
-func (c *HTTPClient) GetHosts(ctx context.Context, search, thin string, page, perPage int64) (HostResponse, error) {
+func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage int64) (HostResponse, error) {
 	var result HostResponse
 
 	params := url.Values{}
-	if search != "" {
-		params.Set("search", search)
-	}
+	params.Set("search", c.Search)
+
 	if thin == "true" {
 		params.Set("thin", thin)
 	}
@@ -410,7 +411,7 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	}
 
 	ctx := context.Background()
-	hostsFirstPage, err := c.GetHosts(ctx, "", "true", 1, perPage)
+	hostsFirstPage, err := c.GetHosts(ctx, "true", 1, perPage)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot get foreman hosts: %v", err)
 		return nil, errMsg
@@ -427,7 +428,7 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	}
 
 	for page := hostsFirstPage.Page + 1; page <= pages; page++ {
-		hostsPage, err := c.GetHosts(ctx, "", "true", page, perPage)
+		hostsPage, err := c.GetHosts(ctx, "true", page, perPage)
 		if err != nil {
 			errMsg := fmt.Errorf("cannot get foreman hosts page (%d/%d) %v", page, pages, err)
 			return nil, errMsg
@@ -469,13 +470,13 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	return hostsFacts, nil
 }
 
-func (c *HTTPClient) GetHostsFiltered(search string, perPage int64) ([]Host, error) {
+func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 	if c.Limit != 0 && c.Limit < perPage {
 		perPage = int64(c.Limit)
 	}
 
 	ctx := context.Background()
-	hostsFirstPage, err := c.GetHosts(ctx, search, "true", 1, perPage)
+	hostsFirstPage, err := c.GetHosts(ctx, "true", 1, perPage)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot get foreman hosts: %v", err)
 		return nil, errMsg
@@ -542,7 +543,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 			// along with the index so we can sort them later along with
 			// any error that might have occured
 			ctx := context.Background()
-			res, err := c.GetHosts(ctx, "", "false", page, perPage)
+			res, err := c.GetHosts(ctx, "false", page, perPage)
 			result := &HostWithConcurrencyResult{i, res, err}
 
 			// now we can send the result struct through the resultsChan

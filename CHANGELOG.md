@@ -1,3 +1,7 @@
+## 0.0.5 / 2024-01-15
+
+* [FEATURE] add flag to filter foreman hosts search
+
 ## 0.0.4 / 2024-01-12
 
 * [FEATURE] add user agent http header in foreman requests

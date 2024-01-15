@@ -39,6 +39,7 @@ var (
 
 	concurrency = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
 	limit       = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
+	search      = kingpin.Flag("search", "Foreman host search filter").Default("").String()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
 	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors").Bool()
@@ -150,6 +151,7 @@ func main() {
 		*skipTLSVerify,
 		*concurrency,
 		*limit,
+		*search,
 		*collectorHostFactSearch,
 		*collectorHostFactIncludeRegex,
 		*collectorHostFactExcludeRegex,

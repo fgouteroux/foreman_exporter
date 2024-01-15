@@ -66,7 +66,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	var errVal float64
-	hostStatus, hostStatusError := c.Client.GetHostsFiltered("", 100)
+	hostStatus, hostStatusError := c.Client.GetHostsFiltered(100)
 
 	if hostStatusError != nil {
 		level.Error(c.Logger).Log("msg", "Failed to get hosts status filtered", "err", hostStatusError) // #nosec G104
