@@ -24,27 +24,19 @@ var (
 )
 
 type HostFactCollector struct {
-	Client      *foreman.HTTPClient
-	CacheConfig *cacheConfig
-	RingConfig  ExporterRing
-	Logger      log.Logger
+	Client            *foreman.HTTPClient
+	CacheConfig       *cacheConfig
+	RingConfig        ExporterRing
+	Logger            log.Logger
+	Timeout           float64
+	TimeoutOffset     float64
+	PrometheusTimeout float64
+	UseExpiredCache   bool
 }
 
 func (c HostFactCollector) Describe(_ chan<- *prometheus.Desc) {}
 
 func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
-	if *collectorsLock {
-		// lock and return directly if another request is in progress
-		select {
-		case hostFactsCollectorLock <- struct{}{}:
-			defer func() { <-hostFactsCollectorLock }()
-			hostFactCollectorInflightRequestBlocking(ch, 0)
-		default:
-			hostFactCollectorInflightRequestBlocking(ch, 1)
-			return
-		}
-	}
-
 	var found bool
 	var expired bool
 	var data []map[string]string
@@ -118,54 +110,114 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	var errVal float64
+	var expiredCacheVal float64
+	var scrapeTimeoutVal float64
 
-	if !found || expired {
-		hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
-		if hostsFactsError != nil {
-			level.Error(c.Logger).Log("msg", "Failed to get hosts facts filtered", "err", hostsFactsError) // #nosec G104
-			errVal = 1
-			if expired {
-				level.Warn(c.Logger).Log("msg", "Use expired cache") // #nosec G104
-			}
+	if !found || expired || !c.UseExpiredCache {
+
+		var timeout float64
+		if c.PrometheusTimeout != 0 {
+			timeout = c.PrometheusTimeout - c.TimeoutOffset
 		} else {
-			// clear data
-			data = nil
-			for host, facts := range hostsFacts {
-				labels := map[string]string{"name": host}
-				for factName, factValue := range facts {
+			timeout = c.Timeout - c.TimeoutOffset
+		}
 
-					replacer := strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
-					factNameSanitized := replacer.Replace(factName)
-					if !labelNameRegexp.MatchString(factNameSanitized) {
-						level.Error(c.Logger).Log("msg", fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp)) // #nosec G104
-						continue
-					}
-					labels[factNameSanitized] = factValue
+		deadline := time.Duration(timeout * float64(time.Second))
+
+		result := make(chan []map[string]string, 1)
+		inflight := make(chan bool, 1)
+
+		// use a goroutine to get result in async mode
+		go func() {
+
+			if *collectorsLock {
+				// lock and return directly if another request is in progress
+				select {
+				case hostFactsCollectorLock <- struct{}{}:
+					defer func() { <-hostFactsCollectorLock }()
+					hostFactCollectorInflightRequestBlocking(ch, 0)
+				default:
+					hostFactCollectorInflightRequestBlocking(ch, 1)
+					// another request is running, notify the chann to not wait for the timeout
+					inflight <- true
+					return
 				}
-				data = append(data, labels)
 			}
 
-			// Add to the cache
-			if c.RingConfig.enabled && c.CacheConfig.Enabled {
-				content, _ := json.Marshal(data)
-				if *cacheCompressionEnabled {
-					// use zstd to compress data
-					encoder, _ := zstd.NewWriter(nil)
-					encoded := encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)))
-					content = []byte(strconv.Quote(string(encoded)))
+			var hostsData []map[string]string
+			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
+			if hostsFactsError != nil {
+				level.Error(c.Logger).Log("msg", "Failed to get hosts facts filtered", "err", hostsFactsError) // #nosec G104
+				errVal = 1
+				if expired {
+					level.Warn(c.Logger).Log("msg", "Use expired cache") // #nosec G104
 				}
-				if hostsFactsError == nil {
-					// update the cache
+			} else {
+				for host, facts := range hostsFacts {
+					labels := map[string]string{"name": host}
+					for factName, factValue := range facts {
+
+						replacer := strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
+						factNameSanitized := replacer.Replace(factName)
+						if !labelNameRegexp.MatchString(factNameSanitized) {
+							level.Error(c.Logger).Log("msg", fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp)) // #nosec G104
+							continue
+						}
+						labels[factNameSanitized] = factValue
+					}
+					hostsData = append(hostsData, labels)
+				}
+
+				// Add to the cache
+				if c.RingConfig.enabled && c.CacheConfig.Enabled {
+					content, _ := json.Marshal(hostsData)
+					if *cacheCompressionEnabled {
+						// use zstd to compress data
+						encoder, _ := zstd.NewWriter(nil)
+						encoded := encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)))
+						content = []byte(strconv.Quote(string(encoded)))
+					}
+					if hostsFactsError == nil {
+						// update the cache
+						level.Info(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
+						c.updateKV(string(content))
+					}
+				} else if c.CacheConfig.Enabled {
+					// update the local cache
 					level.Debug(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
-					c.updateKV(string(content))
+					localCache.Set(hostsFactsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
-			} else if c.CacheConfig.Enabled {
-				level.Debug(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
-				localCache.Set(hostsFactsKey, data, c.CacheConfig.ExpiresTTL)
+			}
+			// return the data
+			result <- hostsData
+		}()
+
+		// using a select to return metrics under some conditions
+		select {
+		// task finished before the timeout
+		case data = <-result:
+			close(result)
+		// another task is already running, no need to wait for the timeout
+		case <-inflight:
+			close(inflight)
+		// task execution exceed the timeout, task will continue to running and to udpate the cache
+		case <-time.After(deadline):
+			scrapeTimeoutVal = 1
+			level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs exceeded", timeout)) // #nosec G104
+			if c.UseExpiredCache {
+				if len(data) != 0 {
+					expiredCacheVal = 1
+					level.Warn(c.Logger).Log("msg", "using expired cache") // #nosec G104
+				} else {
+					level.Warn(c.Logger).Log("msg", "cache is empty") // #nosec G104
+				}
+			} else {
+				data = nil
 			}
 		}
 	}
 
+	// return metrics
 	for _, labels := range data {
 		ch <- prometheus.MustNewConstMetric(
 			prometheus.NewDesc(
@@ -178,6 +230,33 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	hostFactCollectorScrapeError(ch, errVal)
+	hostFactCollectorScrapeTimeout(ch, scrapeTimeoutVal)
+
+	if c.CacheConfig.Enabled {
+		hostFactCollectorExpiredCache(ch, expiredCacheVal)
+	}
+}
+
+func hostFactCollectorScrapeTimeout(ch chan<- prometheus.Metric, val float64) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			"foreman_exporter_host_facts_scrape_timeout",
+			"1 if timeout occurs, 0 otherwise",
+			nil, nil,
+		),
+		prometheus.GaugeValue, val,
+	)
+}
+
+func hostFactCollectorExpiredCache(ch chan<- prometheus.Metric, val float64) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			"foreman_exporter_host_facts_use_expired_cache",
+			"1 if using expired cache, 0 otherwise",
+			nil, nil,
+		),
+		prometheus.GaugeValue, val,
+	)
 }
 
 func hostFactCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {

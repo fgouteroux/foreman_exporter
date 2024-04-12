@@ -180,13 +180,7 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 	l.WithFields(fields(keysAndValues)).Warn(msg)
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
-
-	reg.MustRegister(
-		hostsFactsHistVecMetric,
-		hostsFactsCounterMetric,
-	)
-
+func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger) *HTTPClient {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, // #nosec G402
 	}
@@ -221,6 +215,14 @@ func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bo
 		ExcludeHostFactRegex: excludeHostFactRegex,
 		Log:                  log,
 	}
+}
+
+// Set prometheus registry
+func (c *HTTPClient) SetHostsFactsRegistry(reg prometheus.Registerer) {
+	reg.MustRegister(
+		hostsFactsHistVecMetric,
+		hostsFactsCounterMetric,
+	)
 }
 
 // OnRequestCompleted sets the API request completion callback

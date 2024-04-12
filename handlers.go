@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"net/http"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/grafana/dskit/kv/memberlist"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed index.gohtml
@@ -102,4 +106,32 @@ func memberlistStatusHandler(httpPathPrefix string, kvs *memberlist.KVInitServic
 	})
 	template.Must(templ.Parse(memberlistStatusPageHTML))
 	return memberlist.NewHTTPStatusHandler(kvs, templ)
+}
+
+func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactCollector) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	registry := prometheus.NewRegistry()
+
+	collector.Client.SetHostsFactsRegistry(registry)
+
+	// Get Prometheus timeout header
+	collector.PrometheusTimeout, _ = strconv.ParseFloat(r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"), 64)
+
+	expiredCacheparam := r.URL.Query().Get("expired-cache")
+	if expiredCacheparam != "" {
+		var err error
+		collector.UseExpiredCache, err = strconv.ParseBool(expiredCacheparam)
+		if err != nil {
+			http.Error(w, "expired-cache should be a boolean", http.StatusBadRequest)
+			return
+		}
+	}
+
+	registry.MustRegister(collector)
+
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }

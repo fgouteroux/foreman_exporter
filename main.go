@@ -37,9 +37,10 @@ var (
 	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
 	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
-	concurrency = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
-	limit       = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
-	search      = kingpin.Flag("search", "Foreman host search filter").Default("").String()
+	concurrency   = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
+	limit         = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
+	search        = kingpin.Flag("search", "Foreman host search filter").Default("").String()
+	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout in seconds.").Default("0.5").Float64()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
 	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors").Bool()
@@ -51,6 +52,7 @@ var (
 	collectorHostFactSearch       = kingpin.Flag("collector.hostfact.search", "search host fact query filter").String()
 	collectorHostFactIncludeRegex = kingpin.Flag("collector.hostfact.include", "host fact to include (regex)").Regexp()
 	collectorHostFactExcludeRegex = kingpin.Flag("collector.hostfact.exclude", "host fact to exclude (regex)").Regexp()
+	collectorHostFactTimeout      = kingpin.Flag("collector.hostfact.timeout", "host fact timeout").Default("30").Float64()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time").Default("1h").Duration()
@@ -142,8 +144,6 @@ func main() {
 
 	http.Handle("/", indexHandler("", indexPage))
 
-	hostFactRegistry := prometheus.NewRegistry()
-
 	client := foreman.NewHTTPClient(
 		*baseURL,
 		*username,
@@ -156,7 +156,6 @@ func main() {
 		*collectorHostFactIncludeRegex,
 		*collectorHostFactExcludeRegex,
 		nil,
-		hostFactRegistry,
 	)
 
 	if slices.Contains(*collectorsEnabled, "host") {
@@ -178,13 +177,18 @@ func main() {
 			{Desc: "Exported Host Facts metrics", Path: "/hosts-facts-metrics"},
 		})
 
-		hostFactRegistry.MustRegister(HostFactCollector{
-			Client:      client,
-			Logger:      logger,
-			RingConfig:  ringConfig,
-			CacheConfig: cacheCfg,
+		collector := HostFactCollector{
+			Client:        client,
+			Logger:        logger,
+			RingConfig:    ringConfig,
+			CacheConfig:   cacheCfg,
+			TimeoutOffset: *timeoutOffset,
+			Timeout:       *collectorHostFactTimeout,
+		}
+
+		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
+			hostFactHandler(w, req, collector)
 		})
-		http.Handle("/hosts-facts-metrics", promhttp.HandlerFor(hostFactRegistry, promhttp.HandlerOpts{}))
 	}
 
 	server := &http.Server{
