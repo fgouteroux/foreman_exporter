@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
@@ -76,16 +79,43 @@ type cacheConfig struct {
 	ExpiresTTL  time.Duration
 }
 
+func formatFilePath(path string) string {
+	arr := strings.Split(path, "/")
+	return arr[len(arr)-1]
+}
+
+type UTCFormatter struct {
+	logrus.Formatter
+}
+
+func (u UTCFormatter) Format(e *logrus.Entry) ([]byte, error) {
+	e.Time = e.Time.UTC()
+	return u.Formatter.Format(e)
+}
+
 func main() {
 
 	log := logrus.New()
-	log.Formatter = &logrus.JSONFormatter{}
+	log.SetReportCaller(true)
+	log.SetFormatter(UTCFormatter{&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02T15:04:05.000Z",
+		FieldMap: logrus.FieldMap{
+			logrus.FieldKeyTime: "ts",
+			logrus.FieldKeyFile: "caller",
+		},
+		CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+			return "", fmt.Sprintf("%s:%d", formatFilePath(f.File), f.Line)
+		},
+	}})
 
 	promlogConfig := &promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, promlogConfig)
 	kingpin.Version(version.Print("foreman-exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
+
+	lvl, _ := logrus.ParseLevel(promlogConfig.Level.String())
+	log.SetLevel(lvl)
 
 	logger := promlog.New(promlogConfig)
 
@@ -155,7 +185,7 @@ func main() {
 		*collectorHostFactSearch,
 		*collectorHostFactIncludeRegex,
 		*collectorHostFactExcludeRegex,
-		nil,
+		log,
 	)
 
 	if slices.Contains(*collectorsEnabled, "host") {

@@ -184,7 +184,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 					}
 				} else if c.CacheConfig.Enabled {
 					// update the local cache
-					level.Debug(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
+					level.Info(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
 					localCache.Set(hostsFactsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
 			}

@@ -88,6 +88,11 @@ func init() {
 	)
 }
 
+type ErrorResult struct {
+	Status int64  `json:"status"`
+	Error  string `json:"error"`
+}
+
 type HostResponse struct {
 	Total   int64  `json:"total"`
 	Page    int64  `json:"page"`
@@ -299,6 +304,20 @@ func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage in
 	err = c.DoWithContext(ctx, req, &result)
 	if err != nil {
 		hostsCounterMetric.WithLabelValues("failed").Inc()
+
+		var errResult ErrorResult
+		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+			c.Log.WithFields(logrus.Fields{
+				"path": req.URL.Path,
+				"err":  err.Error(),
+			}).Warn("failed to get hosts")
+		} else {
+			c.Log.WithFields(logrus.Fields{
+				"path":   req.URL.Path,
+				"status": errResult.Status,
+				"err":    errResult.Error,
+			}).Warn("failed to get hosts")
+		}
 		return result, err
 	}
 	hostsCounterMetric.WithLabelValues("success").Inc()
@@ -328,6 +347,23 @@ func (c *HTTPClient) GetHostFacts(ctx context.Context, hostID, page, perPage int
 	err = c.DoWithContext(ctx, req, &result)
 	if err != nil {
 		hostsFactsCounterMetric.WithLabelValues("failed").Inc()
+
+		var errResult ErrorResult
+		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+			c.Log.WithFields(logrus.Fields{
+				"host_id": hostID,
+				"path":    req.URL.Path,
+				"err":     err.Error(),
+			}).Warn("failed to get host facts")
+		} else {
+			c.Log.WithFields(logrus.Fields{
+				"host_id": hostID,
+				"path":    req.URL.Path,
+				"status":  errResult.Status,
+				"err":     errResult.Error,
+			}).Warn("failed to get host facts")
+		}
+
 		return result, err
 	}
 	hostsFactsCounterMetric.WithLabelValues("success").Inc()
@@ -437,14 +473,17 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 		}
 		hosts = append(hosts, hostsPage.Results...)
 	}
-	//c.Log.Debugf("Found %d hosts", len(hosts))
+
+	hostsTotal := len(hosts)
+	c.Log.Infof("found %d hosts", hostsTotal)
 
 	results := c.GetHostFactsWithConcurrency(hosts)
 
+	var errCount int
 	hostsFacts := make(map[string]map[string]string, len(results))
 	for _, item := range results {
 		if item.Error != nil {
-			c.Log.Errorf("an error occured: %v", err)
+			errCount++
 			continue
 		}
 
@@ -469,6 +508,11 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 			hostsFacts[name] = factsMap
 		}
 	}
+
+	if errCount > 0 {
+		return hostsFacts, fmt.Errorf("expected '%d' got '%d'", hostsTotal, hostsTotal-errCount)
+	}
+
 	return hostsFacts, nil
 }
 
@@ -501,14 +545,21 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 	results := c.GetHostWithConcurrency(pagesSlice, perPage)
 
 	var hostResults []Host
+
+	var errCount int
 	for _, item := range results {
 		if item.Error != nil {
-			c.Log.Errorf("an error occured: %v", err)
+			errCount++
 			continue
 		}
-
 		hostResults = append(hostResults, item.Result.Results...)
 	}
+
+	if errCount > 0 {
+		hostsTotal := len(hostsFirstPage.Results)
+		return hostResults, fmt.Errorf("expected '%d' got '%d'", hostsTotal, hostsTotal-errCount)
+	}
+
 	return hostResults, nil
 }
 
