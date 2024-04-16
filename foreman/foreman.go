@@ -398,7 +398,7 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 	for i, host := range hosts {
 
 		// start a go routine with the index and hostID in a closure
-		go func(i int, client *HTTPClient, hostID int64) {
+		go func(i int, hostID int64) {
 
 			// this sends an empty struct into the semaphoreChan which
 			// is basically saying add one to the limit, but when the
@@ -420,7 +420,7 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 			// another goroutine to start
 			<-semaphoreChan
 
-		}(i, c, host.ID)
+		}(i, host.ID)
 	}
 
 	// make a slice to hold the results we're expecting
@@ -591,7 +591,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 	for i, page := range pages {
 
 		// start a go routine with the index and hostID in a closure
-		go func(i int, client *HTTPClient, page, perPage int64) {
+		go func(i int, page, perPage int64) {
 
 			// this sends an empty struct into the semaphoreChan which
 			// is basically saying add one to the limit, but when the
@@ -613,7 +613,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 			// another goroutine to start
 			<-semaphoreChan
 
-		}(i, c, page, perPage)
+		}(i, page, perPage)
 	}
 
 	// make a slice to hold the results we're expecting
