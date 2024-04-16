@@ -51,6 +51,7 @@ var (
 	collectorsEnabled               = kingpin.Flag("collector", "collector to enabled (repeatable), choices: [host, hostfact]").Default("host").Enums("host", "hostfact")
 	collectorHostLabelsIncludeRegex = kingpin.Flag("collector.host.labels-include", "host labels to include (regex)").Regexp()
 	collectorHostLabelsExcludeRegex = kingpin.Flag("collector.host.labels-exclude", "host labels to exclude (regex)").Regexp()
+	collectorHostTimeout            = kingpin.Flag("collector.host.timeout", "host timeout").Default("30").Float64()
 
 	collectorHostFactSearch       = kingpin.Flag("collector.hostfact.search", "search host fact query filter").String()
 	collectorHostFactIncludeRegex = kingpin.Flag("collector.hostfact.include", "host fact to include (regex)").Regexp()
@@ -132,7 +133,6 @@ func main() {
 	level.Info(logger).Log("msg", "Starting foreman-exporter", "version", version.Info())   // #nosec G104
 	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext()) // #nosec G104
 
-	// Regist http handler
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.Handle("/static/", http.FileServer(http.FS(staticFiles)))
 
@@ -188,22 +188,13 @@ func main() {
 		log,
 	)
 
-	if slices.Contains(*collectorsEnabled, "host") {
-		prometheus.MustRegister(HostCollector{
-			Client:                client,
-			Logger:                logger,
-			RingConfig:            ringConfig,
-			IncludeHostLabelRegex: *collectorHostLabelsIncludeRegex,
-			ExcludeHostLabelRegex: *collectorHostLabelsExcludeRegex,
-		})
-	}
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
 		if *collectorHostFactSearch == "" && *collectorHostFactIncludeRegex == nil && *collectorHostFactExcludeRegex == nil {
 			level.Warn(logger).Log("msg", "flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!") // #nosec G104
 		}
 
-		indexPage.AddLinks(defaultWeight, "Hosts Facts Metrics", []IndexPageLink{
+		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
 			{Desc: "Exported Host Facts metrics", Path: "/hosts-facts-metrics"},
 		})
 
@@ -218,6 +209,27 @@ func main() {
 
 		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
 			hostFactHandler(w, req, collector)
+		})
+	}
+
+	if slices.Contains(*collectorsEnabled, "host") {
+
+		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
+			{Desc: "Exported Host metrics", Path: "/hosts-metrics"},
+		})
+
+		collector := HostCollector{
+			Client:                client,
+			Logger:                logger,
+			RingConfig:            ringConfig,
+			IncludeHostLabelRegex: *collectorHostLabelsIncludeRegex,
+			ExcludeHostLabelRegex: *collectorHostLabelsExcludeRegex,
+			TimeoutOffset:         *timeoutOffset,
+			Timeout:               *collectorHostTimeout,
+		}
+
+		http.HandleFunc("/hosts-metrics", func(w http.ResponseWriter, req *http.Request) {
+			hostHandler(w, req, collector)
 		})
 	}
 

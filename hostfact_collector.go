@@ -203,7 +203,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		// task execution exceed the timeout, task will continue to running and to udpate the cache
 		case <-time.After(deadline):
 			scrapeTimeoutVal = 1
-			level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs exceeded", timeout)) // #nosec G104
+			level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs reached", timeout)) // #nosec G104
 			if c.UseExpiredCache {
 				if len(data) != 0 {
 					expiredCacheVal = 1

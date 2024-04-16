@@ -30,7 +30,7 @@ var (
 
 	counterMetric = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "foreman_exporter_client_api_requests_total",
+			Name: "foreman_exporter_client_requests_total",
 			Help: "A counter for all requests from the foreman client.",
 		},
 		[]string{"code", "method"},
@@ -78,13 +78,11 @@ var (
 )
 
 func init() {
-	// Register all of the metrics in the standard registry.
+	// Register metrics in the standard registry.
 	prometheus.MustRegister(
 		counterMetric,
 		histVecMetric,
 		inFlightGaugeMetric,
-		hostsCounterMetric,
-		hostsHistVecMetric,
 	)
 }
 
@@ -222,7 +220,15 @@ func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bo
 	}
 }
 
-// Set prometheus registry
+// Set hosts prometheus registry
+func (c *HTTPClient) SetHostsRegistry(reg prometheus.Registerer) {
+	reg.MustRegister(
+		hostsCounterMetric,
+		hostsHistVecMetric,
+	)
+}
+
+// Set hosts facts prometheus registry
 func (c *HTTPClient) SetHostsFactsRegistry(reg prometheus.Registerer) {
 	reg.MustRegister(
 		hostsFactsHistVecMetric,

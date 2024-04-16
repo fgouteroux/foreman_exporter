@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -19,6 +21,9 @@ type HostCollector struct {
 	Logger                log.Logger
 	IncludeHostLabelRegex *regexp.Regexp
 	ExcludeHostLabelRegex *regexp.Regexp
+	Timeout               float64
+	TimeoutOffset         float64
+	PrometheusTimeout     float64
 }
 
 type HostLabels struct {
@@ -39,17 +44,6 @@ type HostLabels struct {
 func (c HostCollector) Describe(_ chan<- *prometheus.Desc) {}
 
 func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
-	if *collectorsLock {
-		// lock and return directly if another request is in progress
-		select {
-		case hostCollectorLock <- struct{}{}:
-			defer func() { <-hostCollectorLock }()
-			hostCollectorInflightRequestBlocking(ch, 0)
-		default:
-			hostCollectorInflightRequestBlocking(ch, 1)
-			return
-		}
-	}
 
 	if c.RingConfig.enabled {
 		// If another replica is the leader, don't expose any metrics from this one.
@@ -65,13 +59,45 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 		level.Debug(c.Logger).Log("msg", "processing metrics collection as this node is the ring leader") // #nosec G104
 	}
 
-	var errVal float64
-	hostStatus, hostStatusError := c.Client.GetHostsFiltered(100)
-
-	if hostStatusError != nil {
-		level.Error(c.Logger).Log("msg", "Failed to get hosts status filtered", "err", hostStatusError) // #nosec G104
-		errVal = 1
+	var timeout float64
+	if c.PrometheusTimeout != 0 {
+		timeout = c.PrometheusTimeout - c.TimeoutOffset
 	} else {
+		timeout = c.Timeout - c.TimeoutOffset
+	}
+
+	deadline := time.Duration(timeout * float64(time.Second))
+
+	result := make(chan []map[string]string, 1)
+	inflight := make(chan bool, 1)
+
+	var errVal float64
+	var scrapeTimeoutVal float64
+	var data []map[string]string
+	// use a goroutine to get result in async mode
+	go func() {
+
+		if *collectorsLock {
+			// lock and return directly if another request is in progress
+			select {
+			case hostCollectorLock <- struct{}{}:
+				defer func() { <-hostCollectorLock }()
+				hostCollectorInflightRequestBlocking(ch, 0)
+			default:
+				hostCollectorInflightRequestBlocking(ch, 1)
+				// another request is running, notify the chann to not wait for the timeout
+				inflight <- true
+				return
+			}
+		}
+
+		hostStatus, hostStatusError := c.Client.GetHostsFiltered(100)
+		if hostStatusError != nil {
+			level.Error(c.Logger).Log("msg", "Failed to get hosts status filtered", "err", hostStatusError) // #nosec G104
+			errVal = 1
+		}
+
+		var hostsData []map[string]string
 		for _, host := range hostStatus {
 			var labels map[string]string
 			data, _ := json.Marshal(HostLabels(host))
@@ -98,18 +124,52 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 			}
 
-			ch <- prometheus.MustNewConstMetric(
-				prometheus.NewDesc(
-					"foreman_exporter_host_status_info",
-					"Foreman host status",
-					nil, labelsFiltered,
-				),
-				prometheus.GaugeValue, 1,
-			)
+			hostsData = append(hostsData, labels)
 		}
+
+		// return the data
+		result <- hostsData
+	}()
+
+	// using a select to return metrics under some conditions
+	select {
+	// task finished before the timeout
+	case data = <-result:
+		close(result)
+	// another task is already running, no need to wait for the timeout
+	case <-inflight:
+		close(inflight)
+	// task execution exceed the timeout, task will continue to running
+	case <-time.After(deadline):
+		scrapeTimeoutVal = 1
+		level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs reached", timeout)) // #nosec G104
+	}
+
+	// return metrics
+	for _, labels := range data {
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(
+				"foreman_exporter_host_status_info",
+				"Foreman host status",
+				nil, labels,
+			),
+			prometheus.GaugeValue, 1,
+		)
 	}
 
 	hostCollectorScrapeError(ch, errVal)
+	hostCollectorScrapeTimeout(ch, scrapeTimeoutVal)
+}
+
+func hostCollectorScrapeTimeout(ch chan<- prometheus.Metric, val float64) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			"foreman_exporter_host_scrape_timeout",
+			"1 if timeout occurs, 0 otherwise",
+			nil, nil,
+		),
+		prometheus.GaugeValue, val,
+	)
 }
 
 func hostCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {

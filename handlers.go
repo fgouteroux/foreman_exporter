@@ -48,6 +48,8 @@ type IndexPageLink struct {
 // List of weights to order link groups in the same order as weights are ordered here.
 const (
 	metricsWeight = iota
+	hostWeight
+	hostFactWeight
 	defaultWeight
 	ringWeight
 	memberlistWeight
@@ -129,6 +131,23 @@ func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactC
 			return
 		}
 	}
+
+	registry.MustRegister(collector)
+
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
+}
+
+func hostHandler(w http.ResponseWriter, r *http.Request, collector HostCollector) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	registry := prometheus.NewRegistry()
+	collector.Client.SetHostsRegistry(registry)
+
+	// Get Prometheus timeout header
+	collector.PrometheusTimeout, _ = strconv.ParseFloat(r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"), 64)
 
 	registry.MustRegister(collector)
 
