@@ -147,11 +147,8 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			var hostsData []map[string]string
 			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
 			if hostsFactsError != nil {
-				level.Error(c.Logger).Log("msg", "Failed to get hosts facts filtered", "err", hostsFactsError) // #nosec G104
 				errVal = 1
-				if expired {
-					level.Warn(c.Logger).Log("msg", "Use expired cache") // #nosec G104
-				}
+				level.Error(c.Logger).Log("msg", "Failed to get hosts facts filtered", "err", hostsFactsError) // #nosec G104
 			} else {
 				for host, facts := range hostsFacts {
 					labels := map[string]string{"name": host}
@@ -204,16 +201,20 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		case <-time.After(deadline):
 			scrapeTimeoutVal = 1
 			level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs reached", timeout)) // #nosec G104
-			if c.UseExpiredCache {
-				if len(data) != 0 {
-					expiredCacheVal = 1
-					level.Warn(c.Logger).Log("msg", "using expired cache") // #nosec G104
-				} else {
-					level.Warn(c.Logger).Log("msg", "cache is empty") // #nosec G104
-				}
+		}
+	}
+
+	// return expired cache on scrape error/timeout only if the param expired-cache is true
+	if errVal == 1 || scrapeTimeoutVal == 1 {
+		if c.CacheConfig.Enabled && c.UseExpiredCache {
+			if len(data) != 0 {
+				expiredCacheVal = 1
+				level.Warn(c.Logger).Log("msg", "use expired cache") // #nosec G104
 			} else {
-				data = nil
+				level.Warn(c.Logger).Log("msg", "cache is empty") // #nosec G104
 			}
+		} else {
+			data = nil
 		}
 	}
 
