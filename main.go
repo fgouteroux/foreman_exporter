@@ -205,6 +205,7 @@ func main() {
 			CacheConfig:   cacheCfg,
 			TimeoutOffset: *timeoutOffset,
 			Timeout:       *collectorHostFactTimeout,
+			UseCache:      true,
 		}
 
 		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {

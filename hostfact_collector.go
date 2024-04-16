@@ -31,6 +31,7 @@ type HostFactCollector struct {
 	Timeout           float64
 	TimeoutOffset     float64
 	PrometheusTimeout float64
+	UseCache          bool
 	UseExpiredCache   bool
 }
 
@@ -40,7 +41,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	var found bool
 	var expired bool
 	var data []map[string]string
-	if c.RingConfig.enabled {
+	if c.RingConfig.enabled && c.UseCache {
 		// If another replica is the leader, don't expose any metrics from this one.
 		isLeaderNow, err := isLeader(c.RingConfig)
 		if err != nil {
@@ -93,7 +94,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	} else {
 
-		if c.CacheConfig.Enabled {
+		if c.CacheConfig.Enabled && c.UseCache {
 			// Try to get the value from the local cache
 			cached, ok := localCache.Get(hostsFactsKey)
 			if ok {
@@ -113,8 +114,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	var expiredCacheVal float64
 	var scrapeTimeoutVal float64
 
-	if !found || expired || !c.UseExpiredCache {
-
+	if !found || expired {
 		var timeout float64
 		if c.PrometheusTimeout != 0 {
 			timeout = c.PrometheusTimeout - c.TimeoutOffset

@@ -122,12 +122,22 @@ func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactC
 	// Get Prometheus timeout header
 	collector.PrometheusTimeout, _ = strconv.ParseFloat(r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"), 64)
 
-	expiredCacheparam := r.URL.Query().Get("expired-cache")
-	if expiredCacheparam != "" {
+	expiredCacheParam := r.URL.Query().Get("expired-cache")
+	if expiredCacheParam != "" {
 		var err error
-		collector.UseExpiredCache, err = strconv.ParseBool(expiredCacheparam)
+		collector.UseExpiredCache, err = strconv.ParseBool(expiredCacheParam)
 		if err != nil {
 			http.Error(w, "expired-cache should be a boolean", http.StatusBadRequest)
+			return
+		}
+	}
+
+	cacheParam := r.URL.Query().Get("cache")
+	if cacheParam != "" {
+		var err error
+		collector.UseCache, err = strconv.ParseBool(cacheParam)
+		if err != nil {
+			http.Error(w, "cache should be a boolean", http.StatusBadRequest)
 			return
 		}
 	}
