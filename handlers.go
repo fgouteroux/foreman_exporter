@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"net/http"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/grafana/dskit/kv/memberlist"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed index.gohtml
@@ -44,6 +48,8 @@ type IndexPageLink struct {
 // List of weights to order link groups in the same order as weights are ordered here.
 const (
 	metricsWeight = iota
+	hostWeight
+	hostFactWeight
 	defaultWeight
 	ringWeight
 	memberlistWeight
@@ -83,7 +89,7 @@ func indexHandler(httpPathPrefix string, content *IndexPageContent) http.Handler
 	})
 	template.Must(templ.Parse(indexPageHTML))
 
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		err := templ.Execute(w, indexPageContents{LinkGroups: content.GetContent()})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -102,4 +108,59 @@ func memberlistStatusHandler(httpPathPrefix string, kvs *memberlist.KVInitServic
 	})
 	template.Must(templ.Parse(memberlistStatusPageHTML))
 	return memberlist.NewHTTPStatusHandler(kvs, templ)
+}
+
+func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactCollector) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	registry := prometheus.NewRegistry()
+
+	collector.Client.SetHostsFactsRegistry(registry)
+
+	// Get Prometheus timeout header
+	collector.PrometheusTimeout, _ = strconv.ParseFloat(r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"), 64)
+
+	expiredCacheParam := r.URL.Query().Get("expired-cache")
+	if expiredCacheParam != "" {
+		var err error
+		collector.UseExpiredCache, err = strconv.ParseBool(expiredCacheParam)
+		if err != nil {
+			http.Error(w, "expired-cache should be a boolean", http.StatusBadRequest)
+			return
+		}
+	}
+
+	cacheParam := r.URL.Query().Get("cache")
+	if cacheParam != "" {
+		var err error
+		collector.UseCache, err = strconv.ParseBool(cacheParam)
+		if err != nil {
+			http.Error(w, "cache should be a boolean", http.StatusBadRequest)
+			return
+		}
+	}
+
+	registry.MustRegister(collector)
+
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
+}
+
+func hostHandler(w http.ResponseWriter, r *http.Request, collector HostCollector) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	registry := prometheus.NewRegistry()
+	collector.Client.SetHostsRegistry(registry)
+
+	// Get Prometheus timeout header
+	collector.PrometheusTimeout, _ = strconv.ParseFloat(r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"), 64)
+
+	registry.MustRegister(collector)
+
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }

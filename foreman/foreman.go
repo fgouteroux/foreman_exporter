@@ -30,7 +30,7 @@ var (
 
 	counterMetric = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "foreman_exporter_client_api_requests_total",
+			Name: "foreman_exporter_client_requests_total",
 			Help: "A counter for all requests from the foreman client.",
 		},
 		[]string{"code", "method"},
@@ -78,14 +78,17 @@ var (
 )
 
 func init() {
-	// Register all of the metrics in the standard registry.
+	// Register metrics in the standard registry.
 	prometheus.MustRegister(
 		counterMetric,
 		histVecMetric,
 		inFlightGaugeMetric,
-		hostsCounterMetric,
-		hostsHistVecMetric,
 	)
+}
+
+type ErrorResult struct {
+	Status int64  `json:"status"`
+	Error  string `json:"error"`
 }
 
 type HostResponse struct {
@@ -180,13 +183,7 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 	l.WithFields(fields(keysAndValues)).Warn(msg)
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger, reg prometheus.Registerer) *HTTPClient {
-
-	reg.MustRegister(
-		hostsFactsHistVecMetric,
-		hostsFactsCounterMetric,
-	)
-
+func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger) *HTTPClient {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, // #nosec G402
 	}
@@ -221,6 +218,22 @@ func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bo
 		ExcludeHostFactRegex: excludeHostFactRegex,
 		Log:                  log,
 	}
+}
+
+// Set hosts prometheus registry
+func (c *HTTPClient) SetHostsRegistry(reg prometheus.Registerer) {
+	reg.MustRegister(
+		hostsCounterMetric,
+		hostsHistVecMetric,
+	)
+}
+
+// Set hosts facts prometheus registry
+func (c *HTTPClient) SetHostsFactsRegistry(reg prometheus.Registerer) {
+	reg.MustRegister(
+		hostsFactsHistVecMetric,
+		hostsFactsCounterMetric,
+	)
 }
 
 // OnRequestCompleted sets the API request completion callback
@@ -297,6 +310,20 @@ func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage in
 	err = c.DoWithContext(ctx, req, &result)
 	if err != nil {
 		hostsCounterMetric.WithLabelValues("failed").Inc()
+
+		var errResult ErrorResult
+		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+			c.Log.WithFields(logrus.Fields{
+				"path": req.URL.Path,
+				"err":  err.Error(),
+			}).Warn("failed to get hosts")
+		} else {
+			c.Log.WithFields(logrus.Fields{
+				"path":   req.URL.Path,
+				"status": errResult.Status,
+				"err":    errResult.Error,
+			}).Warn("failed to get hosts")
+		}
 		return result, err
 	}
 	hostsCounterMetric.WithLabelValues("success").Inc()
@@ -326,6 +353,23 @@ func (c *HTTPClient) GetHostFacts(ctx context.Context, hostID, page, perPage int
 	err = c.DoWithContext(ctx, req, &result)
 	if err != nil {
 		hostsFactsCounterMetric.WithLabelValues("failed").Inc()
+
+		var errResult ErrorResult
+		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+			c.Log.WithFields(logrus.Fields{
+				"host_id": hostID,
+				"path":    req.URL.Path,
+				"err":     err.Error(),
+			}).Warn("failed to get host facts")
+		} else {
+			c.Log.WithFields(logrus.Fields{
+				"host_id": hostID,
+				"path":    req.URL.Path,
+				"status":  errResult.Status,
+				"err":     errResult.Error,
+			}).Warn("failed to get host facts")
+		}
+
 		return result, err
 	}
 	hostsFactsCounterMetric.WithLabelValues("success").Inc()
@@ -354,7 +398,7 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 	for i, host := range hosts {
 
 		// start a go routine with the index and hostID in a closure
-		go func(i int, client *HTTPClient, hostID int64) {
+		go func(i int, hostID int64) {
 
 			// this sends an empty struct into the semaphoreChan which
 			// is basically saying add one to the limit, but when the
@@ -376,7 +420,7 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 			// another goroutine to start
 			<-semaphoreChan
 
-		}(i, c, host.ID)
+		}(i, host.ID)
 	}
 
 	// make a slice to hold the results we're expecting
@@ -435,14 +479,17 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 		}
 		hosts = append(hosts, hostsPage.Results...)
 	}
-	//c.Log.Debugf("Found %d hosts", len(hosts))
+
+	hostsTotal := len(hosts)
+	c.Log.Infof("found %d hosts", hostsTotal)
 
 	results := c.GetHostFactsWithConcurrency(hosts)
 
+	var errCount int
 	hostsFacts := make(map[string]map[string]string, len(results))
 	for _, item := range results {
 		if item.Error != nil {
-			c.Log.Errorf("an error occured: %v", err)
+			errCount++
 			continue
 		}
 
@@ -467,6 +514,11 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 			hostsFacts[name] = factsMap
 		}
 	}
+
+	if errCount > 0 {
+		return hostsFacts, fmt.Errorf("expected '%d' got '%d'", hostsTotal, hostsTotal-errCount)
+	}
+
 	return hostsFacts, nil
 }
 
@@ -499,14 +551,21 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 	results := c.GetHostWithConcurrency(pagesSlice, perPage)
 
 	var hostResults []Host
+
+	var errCount int
 	for _, item := range results {
 		if item.Error != nil {
-			c.Log.Errorf("an error occured: %v", err)
+			errCount++
 			continue
 		}
-
 		hostResults = append(hostResults, item.Result.Results...)
 	}
+
+	if errCount > 0 {
+		hostsTotal := len(hostsFirstPage.Results)
+		return hostResults, fmt.Errorf("expected '%d' got '%d'", hostsTotal, hostsTotal-errCount)
+	}
+
 	return hostResults, nil
 }
 
@@ -532,7 +591,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 	for i, page := range pages {
 
 		// start a go routine with the index and hostID in a closure
-		go func(i int, client *HTTPClient, page, perPage int64) {
+		go func(i int, page, perPage int64) {
 
 			// this sends an empty struct into the semaphoreChan which
 			// is basically saying add one to the limit, but when the
@@ -554,7 +613,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 			// another goroutine to start
 			<-semaphoreChan
 
-		}(i, c, page, perPage)
+		}(i, page, perPage)
 	}
 
 	// make a slice to hold the results we're expecting

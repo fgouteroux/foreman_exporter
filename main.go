@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
@@ -37,9 +40,10 @@ var (
 	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
 	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
-	concurrency = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
-	limit       = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
-	search      = kingpin.Flag("search", "Foreman host search filter").Default("").String()
+	concurrency   = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
+	limit         = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
+	search        = kingpin.Flag("search", "Foreman host search filter").Default("").String()
+	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout in seconds.").Default("0.5").Float64()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
 	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors").Bool()
@@ -47,10 +51,12 @@ var (
 	collectorsEnabled               = kingpin.Flag("collector", "collector to enabled (repeatable), choices: [host, hostfact]").Default("host").Enums("host", "hostfact")
 	collectorHostLabelsIncludeRegex = kingpin.Flag("collector.host.labels-include", "host labels to include (regex)").Regexp()
 	collectorHostLabelsExcludeRegex = kingpin.Flag("collector.host.labels-exclude", "host labels to exclude (regex)").Regexp()
+	collectorHostTimeout            = kingpin.Flag("collector.host.timeout", "host timeout").Default("30").Float64()
 
 	collectorHostFactSearch       = kingpin.Flag("collector.hostfact.search", "search host fact query filter").String()
 	collectorHostFactIncludeRegex = kingpin.Flag("collector.hostfact.include", "host fact to include (regex)").Regexp()
 	collectorHostFactExcludeRegex = kingpin.Flag("collector.hostfact.exclude", "host fact to exclude (regex)").Regexp()
+	collectorHostFactTimeout      = kingpin.Flag("collector.hostfact.timeout", "host fact timeout").Default("30").Float64()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time").Default("1h").Duration()
@@ -74,16 +80,43 @@ type cacheConfig struct {
 	ExpiresTTL  time.Duration
 }
 
+func formatFilePath(path string) string {
+	arr := strings.Split(path, "/")
+	return arr[len(arr)-1]
+}
+
+type UTCFormatter struct {
+	logrus.Formatter
+}
+
+func (u UTCFormatter) Format(e *logrus.Entry) ([]byte, error) {
+	e.Time = e.Time.UTC()
+	return u.Formatter.Format(e)
+}
+
 func main() {
 
 	log := logrus.New()
-	log.Formatter = &logrus.JSONFormatter{}
+	log.SetReportCaller(true)
+	log.SetFormatter(UTCFormatter{&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02T15:04:05.000Z",
+		FieldMap: logrus.FieldMap{
+			logrus.FieldKeyTime: "ts",
+			logrus.FieldKeyFile: "caller",
+		},
+		CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+			return "", fmt.Sprintf("%s:%d", formatFilePath(f.File), f.Line)
+		},
+	}})
 
 	promlogConfig := &promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, promlogConfig)
 	kingpin.Version(version.Print("foreman-exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
+
+	lvl, _ := logrus.ParseLevel(promlogConfig.Level.String())
+	log.SetLevel(lvl)
 
 	logger := promlog.New(promlogConfig)
 
@@ -100,7 +133,6 @@ func main() {
 	level.Info(logger).Log("msg", "Starting foreman-exporter", "version", version.Info())   // #nosec G104
 	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext()) // #nosec G104
 
-	// Regist http handler
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.Handle("/static/", http.FileServer(http.FS(staticFiles)))
 
@@ -142,8 +174,6 @@ func main() {
 
 	http.Handle("/", indexHandler("", indexPage))
 
-	hostFactRegistry := prometheus.NewRegistry()
-
 	client := foreman.NewHTTPClient(
 		*baseURL,
 		*username,
@@ -155,36 +185,53 @@ func main() {
 		*collectorHostFactSearch,
 		*collectorHostFactIncludeRegex,
 		*collectorHostFactExcludeRegex,
-		nil,
-		hostFactRegistry,
+		log,
 	)
 
-	if slices.Contains(*collectorsEnabled, "host") {
-		prometheus.MustRegister(HostCollector{
-			Client:                client,
-			Logger:                logger,
-			RingConfig:            ringConfig,
-			IncludeHostLabelRegex: *collectorHostLabelsIncludeRegex,
-			ExcludeHostLabelRegex: *collectorHostLabelsExcludeRegex,
-		})
-	}
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
 		if *collectorHostFactSearch == "" && *collectorHostFactIncludeRegex == nil && *collectorHostFactExcludeRegex == nil {
 			level.Warn(logger).Log("msg", "flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!") // #nosec G104
 		}
 
-		indexPage.AddLinks(defaultWeight, "Hosts Facts Metrics", []IndexPageLink{
+		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
 			{Desc: "Exported Host Facts metrics", Path: "/hosts-facts-metrics"},
 		})
 
-		hostFactRegistry.MustRegister(HostFactCollector{
-			Client:      client,
-			Logger:      logger,
-			RingConfig:  ringConfig,
-			CacheConfig: cacheCfg,
+		collector := HostFactCollector{
+			Client:        client,
+			Logger:        logger,
+			RingConfig:    ringConfig,
+			CacheConfig:   cacheCfg,
+			TimeoutOffset: *timeoutOffset,
+			Timeout:       *collectorHostFactTimeout,
+			UseCache:      true,
+		}
+
+		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
+			hostFactHandler(w, req, collector)
 		})
-		http.Handle("/hosts-facts-metrics", promhttp.HandlerFor(hostFactRegistry, promhttp.HandlerOpts{}))
+	}
+
+	if slices.Contains(*collectorsEnabled, "host") {
+
+		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
+			{Desc: "Exported Host metrics", Path: "/hosts-metrics"},
+		})
+
+		collector := HostCollector{
+			Client:                client,
+			Logger:                logger,
+			RingConfig:            ringConfig,
+			IncludeHostLabelRegex: *collectorHostLabelsIncludeRegex,
+			ExcludeHostLabelRegex: *collectorHostLabelsExcludeRegex,
+			TimeoutOffset:         *timeoutOffset,
+			Timeout:               *collectorHostTimeout,
+		}
+
+		http.HandleFunc("/hosts-metrics", func(w http.ResponseWriter, req *http.Request) {
+			hostHandler(w, req, collector)
+		})
 	}
 
 	server := &http.Server{

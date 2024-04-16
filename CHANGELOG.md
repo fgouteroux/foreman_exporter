@@ -1,6 +1,16 @@
+## 0.0.6 / 2024-04-16
+
+* [FEATURE] allow disabling cache in uri param for hostfact collector
+* [FEATURE] handle scrape timeout and move to dedicated endpoint for host collector
+* [FEATURE] handle scrape timeout and expired-cache for hostfact collector
+* [FIX] return expired cache on scrape error/timeout only if the param expired-cache is true
+* [FIX] enhance foreman client logging and update host fact cache key only if no error
+
+
 ## 0.0.5 / 2024-01-15
 
 * [FEATURE] add flag to filter foreman hosts search
+
 
 ## 0.0.4 / 2024-01-12
 
