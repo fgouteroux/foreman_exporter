@@ -175,7 +175,7 @@ func hostCollectorScrapeTimeout(ch chan<- prometheus.Metric, val float64) {
 func hostCollectorScrapeError(ch chan<- prometheus.Metric, errVal float64) {
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc(
-			"foreman_exporter_host_status_scrape_error",
+			"foreman_exporter_host_scrape_error",
 			"1 if there was an error, 0 otherwise",
 			nil, nil,
 		),
