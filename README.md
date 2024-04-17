@@ -112,7 +112,7 @@ foreman_exporter_client_requests_total{code="200",method="get"} 74
 
 Enabled by default.
 
-This collector return metrics to a dedicated endpoint `/hosts-metrics`.
+This collector return metrics to a dedicated endpoint `/host-metrics`.
 
 ```
 # HELP foreman_exporter_host_status_info Foreman host status
@@ -124,7 +124,7 @@ foreman_exporter_host_status_info{build_status="Installed",configuration_status=
 
 Enable this collector with the flag `--collector=hostfact`.
 
-This collector return metrics to a dedicated endpoint `/hosts-facts-metrics`.
+This collector return metrics to a dedicated endpoint `/host-facts-metrics`.
 
 Foreman hosts facts could render big metrics labels and must be used with the following flags to reduce the number of labels (labels cardinality):
 - `--collector.hostfact.search=`: a foreman query to filter http facts response
@@ -142,8 +142,17 @@ foreman_exporter_host_facts_info{name="server.example.com", operatingsystem="Red
 If the memory cache is enabled and the cache has expired it is possible to use it even if foreman api is not available (network outage, service restart, slow response...). This could prevent hole in metrics scrapping and alerts flapping. To use it, just pass the uri param `expired-cache=true` in scrape config or curl cmd.
 
 ```
-curl http://localhost:11111/hosts-facts-metrics?expired-cache=true
+curl http://localhost:11111/host-facts-metrics?expired-cache=true
 ```
+
+If the memory cache is enabled, it is possible to force cache regeneration with the param `cache=false`.
+
+```
+curl http://localhost:11111/host-facts-metrics?cache=false
+```
+
+
+
 
 The following metrics have been added:
 ```

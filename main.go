@@ -51,12 +51,12 @@ var (
 	collectorsEnabled               = kingpin.Flag("collector", "collector to enabled (repeatable), choices: [host, hostfact]").Default("host").Enums("host", "hostfact")
 	collectorHostLabelsIncludeRegex = kingpin.Flag("collector.host.labels-include", "host labels to include (regex)").Regexp()
 	collectorHostLabelsExcludeRegex = kingpin.Flag("collector.host.labels-exclude", "host labels to exclude (regex)").Regexp()
-	collectorHostTimeout            = kingpin.Flag("collector.host.timeout", "host timeout").Default("30").Float64()
+	collectorHostTimeout            = kingpin.Flag("collector.host.timeout", "timeout in seconds").Default("30").Float64()
 
 	collectorHostFactSearch       = kingpin.Flag("collector.hostfact.search", "search host fact query filter").String()
 	collectorHostFactIncludeRegex = kingpin.Flag("collector.hostfact.include", "host fact to include (regex)").Regexp()
 	collectorHostFactExcludeRegex = kingpin.Flag("collector.hostfact.exclude", "host fact to exclude (regex)").Regexp()
-	collectorHostFactTimeout      = kingpin.Flag("collector.hostfact.timeout", "host fact timeout").Default("30").Float64()
+	collectorHostFactTimeout      = kingpin.Flag("collector.hostfact.timeout", "timeout in seconds").Default("30").Float64()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time").Default("1h").Duration()
@@ -195,7 +195,7 @@ func main() {
 		}
 
 		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
-			{Desc: "Exported Host Facts metrics", Path: "/hosts-facts-metrics"},
+			{Desc: "Exported Host Facts metrics", Path: "/host-facts-metrics"},
 		})
 
 		collector := HostFactCollector{
@@ -208,7 +208,7 @@ func main() {
 			UseCache:      true,
 		}
 
-		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
+		http.HandleFunc("/host-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
 			hostFactHandler(w, req, collector)
 		})
 	}
@@ -216,7 +216,7 @@ func main() {
 	if slices.Contains(*collectorsEnabled, "host") {
 
 		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
-			{Desc: "Exported Host metrics", Path: "/hosts-metrics"},
+			{Desc: "Exported Host metrics", Path: "/host-metrics"},
 		})
 
 		collector := HostCollector{
@@ -229,7 +229,7 @@ func main() {
 			Timeout:               *collectorHostTimeout,
 		}
 
-		http.HandleFunc("/hosts-metrics", func(w http.ResponseWriter, req *http.Request) {
+		http.HandleFunc("/host-metrics", func(w http.ResponseWriter, req *http.Request) {
 			hostHandler(w, req, collector)
 		})
 	}
