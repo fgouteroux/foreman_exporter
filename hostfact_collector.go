@@ -72,7 +72,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 
 				content := cached.(*Cache).Content
 				// zstd decompress data
-				if *cacheCompressionEnabled {
+				if c.CacheConfig.Compression {
 					contentUnquoted, _ := strconv.Unquote(content)
 					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
 					decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
@@ -168,7 +168,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 				// Add to the cache
 				if c.RingConfig.enabled && c.CacheConfig.Enabled {
 					content, _ := json.Marshal(hostsData)
-					if *cacheCompressionEnabled {
+					if c.CacheConfig.Compression {
 						// use zstd to compress data
 						encoder, _ := zstd.NewWriter(nil)
 						encoded := encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)))
