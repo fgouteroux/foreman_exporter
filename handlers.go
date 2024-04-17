@@ -124,6 +124,11 @@ func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactC
 
 	expiredCacheParam := r.URL.Query().Get("expired-cache")
 	if expiredCacheParam != "" {
+		if !collector.CacheConfig.Enabled {
+			http.Error(w, "cache not enabled", http.StatusBadRequest)
+			return
+		}
+
 		var err error
 		collector.UseExpiredCache, err = strconv.ParseBool(expiredCacheParam)
 		if err != nil {
@@ -134,6 +139,11 @@ func hostFactHandler(w http.ResponseWriter, r *http.Request, collector HostFactC
 
 	cacheParam := r.URL.Query().Get("cache")
 	if cacheParam != "" {
+		if !collector.CacheConfig.Enabled {
+			http.Error(w, "cache not enabled", http.StatusBadRequest)
+			return
+		}
+
 		var err error
 		collector.UseCache, err = strconv.ParseBool(cacheParam)
 		if err != nil {
