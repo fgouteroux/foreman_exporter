@@ -21,42 +21,50 @@ Flags:
       --web.telemetry-path="/metrics"  
                                  Path under which to expose metrics.
       --web.prefix-path=""       Prefix path for all http requests.
-      --[no-]web.systemd-socket  Use systemd socket activation listeners instead of port listeners
-                                 (Linux only).
+      --[no-]web.systemd-socket  Use systemd socket activation listeners instead of port listeners (Linux only).
       --web.listen-address=:11111 ...  
-                                 Addresses on which to expose metrics and web interface. Repeatable for
-                                 multiple addresses.
-      --web.config.file=""       [EXPERIMENTAL] Path to configuration file
-                                 that can enable TLS or authentication. See:
-                                 https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md
-      --url=URL                  Foreman url ($FOREMAN_URL)
-      --username=USERNAME        Foreman username ($FOREMAN_USERNAME)
+                                 Addresses on which to expose metrics and web interface. Repeatable for multiple addresses.
+      --web.config.file=""       [EXPERIMENTAL] Path to configuration file that can enable TLS or authentication. See: https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md
+      --url=URL                  Foreman url. ($FOREMAN_URL)
+      --username=USERNAME        Foreman username. ($FOREMAN_USERNAME)
       --password=PASSWORD        Foreman password ($FOREMAN_PASSWORD)
-      --[no-]skip-tls-verify     Foreman skip TLS verify ($FOREMAN_SKIP_TLS_VERIFY)
-      --concurrency=4            Max concurrent http request
-      --limit=0                  Foreman host limit search
-      --search=""                Foreman host search filter
-      --timeout-offset=0.5       Offset to subtract from Prometheus-supplied timeout in seconds.
+      --[no-]skip-tls-verify     Foreman skip TLS verify. ($FOREMAN_SKIP_TLS_VERIFY)
+      --concurrency=4            Max concurrent foreman client http request.
+      --limit=0                  Foreman client host limit search.
+      --search=""                Foreman client host search filter.
+      --timeout-offset=0.5s      Offset to subtract from Prometheus-supplied timeout.
       --[no-]collector.lock-concurrent-requests  
-                                 Lock concurrent requests on collectors
-      --collector=host ...       collector to enabled (repeatable), choices: [host, hostfact]
+                                 Lock concurrent requests on collectors.
+      --collector=host ...       Collector to enabled (repeatable), choices: [host, hostfact].
       --collector.host.labels-include=COLLECTOR.HOST.LABELS-INCLUDE  
-                                 host labels to include (regex)
+                                 Host labels to include (regex).
       --collector.host.labels-exclude=COLLECTOR.HOST.LABELS-EXCLUDE  
-                                 host labels to exclude (regex)
-      --collector.host.timeout=30  
-                                 host timeout
+                                 Host labels to exclude (regex).
+      --collector.host.timeout=30s  
+                                 Host default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'
+      --[no-]collector.host.cache.enabled  
+                                 Enable host cache, if global 'cache.enabled' is false.
+      --[no-]collector.host.cache.compression  
+                                 Enable host zstd cache compression for kvstore values, if global 'cache.compression' is false.
+      --collector.host.cache.ttl-expires=COLLECTOR.HOST.CACHE.TTL-EXPIRES  
+                                 Host cache expiration time, if omitted, inherit from 'cache.ttl-expires'.
       --collector.hostfact.search=COLLECTOR.HOSTFACT.SEARCH  
-                                 search host fact query filter
+                                 Search host fact query filter.
       --collector.hostfact.include=COLLECTOR.HOSTFACT.INCLUDE  
-                                 host fact to include (regex)
+                                 Host fact to include (regex).
       --collector.hostfact.exclude=COLLECTOR.HOSTFACT.EXCLUDE  
-                                 host fact to exclude (regex)
-      --collector.hostfact.timeout=30  
-                                 host fact timeout
-      --[no-]cache.enabled       Enable cache
-      --cache.ttl-expires=1h     Cache Expiration time
-      --[no-]cache.compression   Enable zstd compression for kvstore values
+                                 Host fact to exclude (regex).
+      --collector.hostfact.timeout=30s  
+                                 Host fact default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'.
+      --[no-]collector.hostfact.cache.enabled  
+                                 Enable host fact cache, if global 'cache.enabled' is false.
+      --[no-]collector.hostfact.cache.compression  
+                                 Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.
+      --collector.hostfact.cache.ttl-expires=COLLECTOR.HOSTFACT.CACHE.TTL-EXPIRES  
+                                 Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.
+      --[no-]cache.enabled       Enable cache for all collectors.
+      --cache.ttl-expires=1h     Cache Expiration time for all collectors.
+      --[no-]cache.compression   Enable zstd cache compression for all collectors in kvstore.
       --[no-]ring.enabled        Enable the ring to deduplicate exported foreman metrics.
       --ring.instance-id=RING.INSTANCE-ID  
                                  Instance ID to register in the ring.
@@ -64,12 +72,10 @@ Flags:
                                  IP address to advertise in the ring. Default is auto-detected.
       --ring.instance-port=7946  Port to advertise in the ring.
       --ring.instance-interface-names=RING.INSTANCE-INTERFACE-NAMES  
-                                 List of network interface names to look up when finding the instance IP
-                                 address.
+                                 List of network interface names to look up when finding the instance IP address.
       --ring.join-members=RING.JOIN-MEMBERS  
                                  Other cluster members to join.
-      --log.level=info           Only log messages with the given severity or above. One of: [debug,
-                                 info, warn, error]
+      --log.level=info           Only log messages with the given severity or above. One of: [debug, info, warn, error]
       --log.format=logfmt        Output format of log messages. One of: [logfmt, json]
       --[no-]version             Show application version.
 ```
@@ -112,7 +118,7 @@ foreman_exporter_client_requests_total{code="200",method="get"} 74
 
 Enabled by default.
 
-This collector return metrics to a dedicated endpoint `/hosts-metrics`.
+This collector return metrics to a dedicated endpoint `/host-metrics`.
 
 ```
 # HELP foreman_exporter_host_status_info Foreman host status
@@ -120,11 +126,33 @@ This collector return metrics to a dedicated endpoint `/hosts-metrics`.
 foreman_exporter_host_status_info{build_status="Installed",configuration_status="Active",global_status="OK",name="server.example.com",organization="example"} 1
 ```
 
+If the memory cache is enabled and the cache has expired it is possible to use it even if foreman api is not available (network outage, service restart, slow response...). This could prevent hole in metrics scrapping and alerts flapping. To use it, just pass the uri param `expired-cache=true` in scrape config or curl cmd.
+
+```
+curl http://localhost:11111/host-metrics?expired-cache=true
+```
+
+If the memory cache is enabled, it is possible to force cache regeneration with the param `cache=false`.
+
+```
+curl http://localhost:11111/host-metrics?cache=false
+```
+
+The following metrics have been added:
+```
+# HELP foreman_exporter_host_scrape_timeout 1 if timeout occurs, 0 otherwise
+# TYPE foreman_exporter_host_scrape_timeout gauge
+foreman_exporter_host_scrape_timeout 1
+# HELP foreman_exporter_host_use_expired_cache 1 if using expired cache, 0 otherwise
+# TYPE foreman_exporter_host_use_expired_cache gauge
+foreman_exporter_host_use_expired_cache 1
+```
+
 **Foreman hosts facts**
 
 Enable this collector with the flag `--collector=hostfact`.
 
-This collector return metrics to a dedicated endpoint `/hosts-facts-metrics`.
+This collector return metrics to a dedicated endpoint `/host-facts-metrics`.
 
 Foreman hosts facts could render big metrics labels and must be used with the following flags to reduce the number of labels (labels cardinality):
 - `--collector.hostfact.search=`: a foreman query to filter http facts response
@@ -142,8 +170,15 @@ foreman_exporter_host_facts_info{name="server.example.com", operatingsystem="Red
 If the memory cache is enabled and the cache has expired it is possible to use it even if foreman api is not available (network outage, service restart, slow response...). This could prevent hole in metrics scrapping and alerts flapping. To use it, just pass the uri param `expired-cache=true` in scrape config or curl cmd.
 
 ```
-curl http://localhost:11111/hosts-facts-metrics?expired-cache=true
+curl http://localhost:11111/host-facts-metrics?expired-cache=true
 ```
+
+If the memory cache is enabled, it is possible to force cache regeneration with the param `cache=false`.
+
+```
+curl http://localhost:11111/host-facts-metrics?cache=false
+```
+
 
 The following metrics have been added:
 ```

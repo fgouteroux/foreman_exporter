@@ -35,32 +35,39 @@ var (
 	prefixPath             = kingpin.Flag("web.prefix-path", "Prefix path for all http requests.").Default("").String()
 	webConfig              = webflag.AddFlags(kingpin.CommandLine, ":11111")
 
-	baseURL       = kingpin.Flag("url", "Foreman url").Envar("FOREMAN_URL").Required().URL()
-	username      = kingpin.Flag("username", "Foreman username").Envar("FOREMAN_USERNAME").Required().String()
+	baseURL       = kingpin.Flag("url", "Foreman url.").Envar("FOREMAN_URL").Required().URL()
+	username      = kingpin.Flag("username", "Foreman username.").Envar("FOREMAN_USERNAME").Required().String()
 	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
-	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
+	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify.").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
-	concurrency   = kingpin.Flag("concurrency", "Max concurrent http request").Default("4").Int64()
-	limit         = kingpin.Flag("limit", "Foreman host limit search").Default("0").Int64()
-	search        = kingpin.Flag("search", "Foreman host search filter").Default("").String()
-	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout in seconds.").Default("0.5").Float64()
+	concurrency   = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
+	limit         = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
+	search        = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
+	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
-	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors").Bool()
+	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors.").Bool()
 
-	collectorsEnabled               = kingpin.Flag("collector", "collector to enabled (repeatable), choices: [host, hostfact]").Default("host").Enums("host", "hostfact")
-	collectorHostLabelsIncludeRegex = kingpin.Flag("collector.host.labels-include", "host labels to include (regex)").Regexp()
-	collectorHostLabelsExcludeRegex = kingpin.Flag("collector.host.labels-exclude", "host labels to exclude (regex)").Regexp()
-	collectorHostTimeout            = kingpin.Flag("collector.host.timeout", "host timeout").Default("30").Float64()
+	collectorsEnabled = kingpin.Flag("collector", "Collector to enabled (repeatable), choices: [host, hostfact].").Default("host").Enums("host", "hostfact")
 
-	collectorHostFactSearch       = kingpin.Flag("collector.hostfact.search", "search host fact query filter").String()
-	collectorHostFactIncludeRegex = kingpin.Flag("collector.hostfact.include", "host fact to include (regex)").Regexp()
-	collectorHostFactExcludeRegex = kingpin.Flag("collector.hostfact.exclude", "host fact to exclude (regex)").Regexp()
-	collectorHostFactTimeout      = kingpin.Flag("collector.hostfact.timeout", "host fact timeout").Default("30").Float64()
+	collectorHostLabelsIncludeRegex      = kingpin.Flag("collector.host.labels-include", "Host labels to include (regex).").Regexp()
+	collectorHostLabelsExcludeRegex      = kingpin.Flag("collector.host.labels-exclude", "Host labels to exclude (regex).").Regexp()
+	collectorHostTimeout                 = kingpin.Flag("collector.host.timeout", "Host default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'").Default("30s").Duration()
+	collectorHostCacheEnabled            = kingpin.Flag("collector.host.cache.enabled", "Enable host cache, if global 'cache.enabled' is false.").Bool()
+	collectorHostCacheCompressionEnabled = kingpin.Flag("collector.host.cache.compression", "Enable host zstd cache compression for kvstore values, if global 'cache.compression' is false.").Bool()
+	collectorHostCacheExpiresTTL         = kingpin.Flag("collector.host.cache.ttl-expires", "Host cache expiration time, if omitted, inherit from 'cache.ttl-expires'.").Duration()
 
-	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache").Bool()
-	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time").Default("1h").Duration()
-	cacheCompressionEnabled = kingpin.Flag("cache.compression", "Enable zstd compression for kvstore values").Bool()
+	collectorHostFactSearch                  = kingpin.Flag("collector.hostfact.search", "Search host fact query filter.").String()
+	collectorHostFactIncludeRegex            = kingpin.Flag("collector.hostfact.include", "Host fact to include (regex).").Regexp()
+	collectorHostFactExcludeRegex            = kingpin.Flag("collector.hostfact.exclude", "Host fact to exclude (regex).").Regexp()
+	collectorHostFactTimeout                 = kingpin.Flag("collector.hostfact.timeout", "Host fact default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'.").Default("30s").Duration()
+	collectorHostFactCacheEnabled            = kingpin.Flag("collector.hostfact.cache.enabled", "Enable host fact cache, if global 'cache.enabled' is false.").Bool()
+	collectorHostFactCacheCompressionEnabled = kingpin.Flag("collector.hostfact.cache.compression", "Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.").Bool()
+	collectorHostFactCacheExpiresTTL         = kingpin.Flag("collector.hostfact.cache.ttl-expires", "Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.").Duration()
+
+	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache for all collectors.").Bool()
+	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time for all collectors.").Default("1h").Duration()
+	cacheCompressionEnabled = kingpin.Flag("cache.compression", "Enable zstd cache compression for all collectors in kvstore.").Bool()
 
 	ringEnabled                = kingpin.Flag("ring.enabled", "Enable the ring to deduplicate exported foreman metrics.").Bool()
 	ringInstanceID             = kingpin.Flag("ring.instance-id", "Instance ID to register in the ring.").String()
@@ -162,14 +169,8 @@ func main() {
 
 		http.Handle("/ring", ringConfig.lifecycler)
 		http.Handle("/memberlist", memberlistStatusHandler("", ringConfig.memberlistsvc))
-	} else if *cacheEnabled {
+	} else if *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
 		localCache = memcache.NewLocalCache()
-	}
-
-	cacheCfg := &cacheConfig{
-		Enabled:     *cacheEnabled,
-		Compression: *cacheCompressionEnabled,
-		ExpiresTTL:  time.Duration(cacheExpiresTTL.Seconds()) * time.Second,
 	}
 
 	http.Handle("/", indexHandler("", indexPage))
@@ -190,46 +191,110 @@ func main() {
 
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
+		level.Info(logger).Log("msg", "collector host fact enabled") // #nosec G104
+
 		if *collectorHostFactSearch == "" && *collectorHostFactIncludeRegex == nil && *collectorHostFactExcludeRegex == nil {
 			level.Warn(logger).Log("msg", "flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!") // #nosec G104
 		}
 
 		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
-			{Desc: "Exported Host Facts metrics", Path: "/hosts-facts-metrics"},
+			{Desc: "Exported Host Facts metrics", Path: "/host-facts-metrics"},
 		})
+
+		var collectorCacheEnabled bool
+		var collectorCacheCompression bool
+		var collectorCacheExpiresTTL time.Duration
+		if *cacheEnabled {
+			collectorCacheEnabled = true
+		} else {
+			collectorCacheEnabled = *collectorHostFactCacheEnabled
+		}
+
+		if *cacheCompressionEnabled {
+			collectorCacheCompression = true
+		} else {
+			collectorCacheCompression = *collectorHostFactCacheCompressionEnabled
+		}
+
+		if collectorHostFactCacheExpiresTTL.Seconds() == 0 {
+			collectorCacheExpiresTTL = *cacheExpiresTTL
+		} else {
+			collectorCacheExpiresTTL = *collectorHostFactCacheExpiresTTL
+		}
+
+		level.Info(logger).Log("msg", "collector host fact cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled) // #nosec G104
+
+		cacheCfg := &cacheConfig{
+			Enabled:     collectorCacheEnabled,
+			Compression: collectorCacheCompression,
+			ExpiresTTL:  time.Duration(collectorCacheExpiresTTL.Seconds()) * time.Second,
+		}
 
 		collector := HostFactCollector{
 			Client:        client,
 			Logger:        logger,
 			RingConfig:    ringConfig,
 			CacheConfig:   cacheCfg,
-			TimeoutOffset: *timeoutOffset,
-			Timeout:       *collectorHostFactTimeout,
+			TimeoutOffset: timeoutOffset.Seconds(),
+			Timeout:       collectorHostFactTimeout.Seconds(),
 			UseCache:      true,
 		}
 
-		http.HandleFunc("/hosts-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
+		http.HandleFunc("/host-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
 			hostFactHandler(w, req, collector)
 		})
 	}
 
 	if slices.Contains(*collectorsEnabled, "host") {
 
+		level.Info(logger).Log("msg", "collector host enabled") // #nosec G104
+
 		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
-			{Desc: "Exported Host metrics", Path: "/hosts-metrics"},
+			{Desc: "Exported Host metrics", Path: "/host-metrics"},
 		})
+
+		var collectorCacheEnabled bool
+		var collectorCacheCompression bool
+		var collectorCacheExpiresTTL time.Duration
+		if *cacheEnabled {
+			collectorCacheEnabled = true
+		} else {
+			collectorCacheEnabled = *collectorHostCacheEnabled
+		}
+
+		if *cacheCompressionEnabled {
+			collectorCacheCompression = true
+		} else {
+			collectorCacheCompression = *collectorHostCacheCompressionEnabled
+		}
+
+		if collectorHostCacheExpiresTTL.Seconds() == 0 {
+			collectorCacheExpiresTTL = *cacheExpiresTTL
+		} else {
+			collectorCacheExpiresTTL = *collectorHostCacheExpiresTTL
+		}
+
+		level.Info(logger).Log("msg", "collector host cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled) // #nosec G104
+
+		cacheCfg := &cacheConfig{
+			Enabled:     collectorCacheEnabled,
+			Compression: collectorCacheCompression,
+			ExpiresTTL:  time.Duration(collectorCacheExpiresTTL.Seconds()) * time.Second,
+		}
 
 		collector := HostCollector{
 			Client:                client,
 			Logger:                logger,
 			RingConfig:            ringConfig,
+			CacheConfig:           cacheCfg,
 			IncludeHostLabelRegex: *collectorHostLabelsIncludeRegex,
 			ExcludeHostLabelRegex: *collectorHostLabelsExcludeRegex,
-			TimeoutOffset:         *timeoutOffset,
-			Timeout:               *collectorHostTimeout,
+			TimeoutOffset:         timeoutOffset.Seconds(),
+			Timeout:               collectorHostTimeout.Seconds(),
+			UseCache:              true,
 		}
 
-		http.HandleFunc("/hosts-metrics", func(w http.ResponseWriter, req *http.Request) {
+		http.HandleFunc("/host-metrics", func(w http.ResponseWriter, req *http.Request) {
 			hostHandler(w, req, collector)
 		})
 	}
