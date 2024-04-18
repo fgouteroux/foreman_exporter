@@ -21,54 +21,50 @@ Flags:
       --web.telemetry-path="/metrics"  
                                  Path under which to expose metrics.
       --web.prefix-path=""       Prefix path for all http requests.
-      --[no-]web.systemd-socket  Use systemd socket activation listeners instead of port listeners
-                                 (Linux only).
+      --[no-]web.systemd-socket  Use systemd socket activation listeners instead of port listeners (Linux only).
       --web.listen-address=:11111 ...  
-                                 Addresses on which to expose metrics and web interface. Repeatable for
-                                 multiple addresses.
-      --web.config.file=""       [EXPERIMENTAL] Path to configuration file
-                                 that can enable TLS or authentication. See:
-                                 https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md
-      --url=URL                  Foreman url ($FOREMAN_URL)
-      --username=USERNAME        Foreman username ($FOREMAN_USERNAME)
+                                 Addresses on which to expose metrics and web interface. Repeatable for multiple addresses.
+      --web.config.file=""       [EXPERIMENTAL] Path to configuration file that can enable TLS or authentication. See: https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md
+      --url=URL                  Foreman url. ($FOREMAN_URL)
+      --username=USERNAME        Foreman username. ($FOREMAN_USERNAME)
       --password=PASSWORD        Foreman password ($FOREMAN_PASSWORD)
-      --[no-]skip-tls-verify     Foreman skip TLS verify ($FOREMAN_SKIP_TLS_VERIFY)
-      --concurrency=4            Max concurrent http request
-      --limit=0                  Foreman host limit search
-      --search=""                Foreman host search filter
+      --[no-]skip-tls-verify     Foreman skip TLS verify. ($FOREMAN_SKIP_TLS_VERIFY)
+      --concurrency=4            Max concurrent foreman client http request.
+      --limit=0                  Foreman client host limit search.
+      --search=""                Foreman client host search filter.
       --timeout-offset=0.5s      Offset to subtract from Prometheus-supplied timeout.
       --[no-]collector.lock-concurrent-requests  
-                                 lock concurrent requests on collectors
-      --collector=host ...       collector to enabled (repeatable), choices: [host, hostfact]
+                                 Lock concurrent requests on collectors.
+      --collector=host ...       Collector to enabled (repeatable), choices: [host, hostfact].
       --collector.host.labels-include=COLLECTOR.HOST.LABELS-INCLUDE  
-                                 host labels to include (regex)
+                                 Host labels to include (regex).
       --collector.host.labels-exclude=COLLECTOR.HOST.LABELS-EXCLUDE  
-                                 host labels to exclude (regex)
+                                 Host labels to exclude (regex).
       --collector.host.timeout=30s  
-                                 host timeout
+                                 Host default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'
       --[no-]collector.host.cache.enabled  
-                                 enable host cache
+                                 Enable host cache, if global 'cache.enabled' is false.
       --[no-]collector.host.cache.compression  
-                                 enable host cache zstd compression for kvstore values
+                                 Enable host zstd cache compression for kvstore values, if global 'cache.compression' is false.
       --collector.host.cache.ttl-expires=COLLECTOR.HOST.CACHE.TTL-EXPIRES  
-                                 host cache expiration time
+                                 Host cache expiration time, if omitted, inherit from 'cache.ttl-expires'.
       --collector.hostfact.search=COLLECTOR.HOSTFACT.SEARCH  
-                                 search host fact query filter
+                                 Search host fact query filter.
       --collector.hostfact.include=COLLECTOR.HOSTFACT.INCLUDE  
-                                 host fact to include (regex)
+                                 Host fact to include (regex).
       --collector.hostfact.exclude=COLLECTOR.HOSTFACT.EXCLUDE  
-                                 host fact to exclude (regex)
+                                 Host fact to exclude (regex).
       --collector.hostfact.timeout=30s  
-                                 host fact timeout
+                                 Host fact default timeout if no request header 'X-Prometheus-Scrape-Timeout-Seconds'.
       --[no-]collector.hostfact.cache.enabled  
-                                 enable host fact cache
+                                 Enable host fact cache, if global 'cache.enabled' is false.
       --[no-]collector.hostfact.cache.compression  
-                                 enable host fact cache zstd compression for kvstore values
+                                 Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.
       --collector.hostfact.cache.ttl-expires=COLLECTOR.HOSTFACT.CACHE.TTL-EXPIRES  
-                                 host fact cache expiration time
-      --[no-]cache.enabled       Enable cache
-      --cache.ttl-expires=1h     Cache Expiration time
-      --[no-]cache.compression   Enable zstd compression for kvstore values
+                                 Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.
+      --[no-]cache.enabled       Enable cache for all collectors.
+      --cache.ttl-expires=1h     Cache Expiration time for all collectors.
+      --[no-]cache.compression   Enable zstd cache compression for all collectors in kvstore.
       --[no-]ring.enabled        Enable the ring to deduplicate exported foreman metrics.
       --ring.instance-id=RING.INSTANCE-ID  
                                  Instance ID to register in the ring.
@@ -76,15 +72,12 @@ Flags:
                                  IP address to advertise in the ring. Default is auto-detected.
       --ring.instance-port=7946  Port to advertise in the ring.
       --ring.instance-interface-names=RING.INSTANCE-INTERFACE-NAMES  
-                                 List of network interface names to look up when finding the instance IP
-                                 address.
+                                 List of network interface names to look up when finding the instance IP address.
       --ring.join-members=RING.JOIN-MEMBERS  
                                  Other cluster members to join.
-      --log.level=info           Only log messages with the given severity or above. One of: [debug,
-                                 info, warn, error]
+      --log.level=info           Only log messages with the given severity or above. One of: [debug, info, warn, error]
       --log.format=logfmt        Output format of log messages. One of: [logfmt, json]
       --[no-]version             Show application version.
-
 ```
 
 ### Metrics Exposed
