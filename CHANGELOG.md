@@ -1,5 +1,6 @@
 ## 0.0.7 / 2024-04-167
 
+* [FEATURE] go 1.22
 * [FEATURE] enable cache for host collector
 * [FIX] return error if cache not enabled and params given to the query in host fact collector
 * [FIX] remove plural word in endpoint path
