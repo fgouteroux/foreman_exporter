@@ -1,6 +1,6 @@
 module github.com/fgouteroux/foreman_exporter
 
-go 1.20
+go 1.22.1
 
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0

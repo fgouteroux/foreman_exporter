@@ -36,24 +36,36 @@ Flags:
       --concurrency=4            Max concurrent http request
       --limit=0                  Foreman host limit search
       --search=""                Foreman host search filter
-      --timeout-offset=0.5       Offset to subtract from Prometheus-supplied timeout in seconds.
+      --timeout-offset=0.5s      Offset to subtract from Prometheus-supplied timeout.
       --[no-]collector.lock-concurrent-requests  
-                                 Lock concurrent requests on collectors
+                                 lock concurrent requests on collectors
       --collector=host ...       collector to enabled (repeatable), choices: [host, hostfact]
       --collector.host.labels-include=COLLECTOR.HOST.LABELS-INCLUDE  
                                  host labels to include (regex)
       --collector.host.labels-exclude=COLLECTOR.HOST.LABELS-EXCLUDE  
                                  host labels to exclude (regex)
-      --collector.host.timeout=30  
+      --collector.host.timeout=30s  
                                  host timeout
+      --[no-]collector.host.cache.enabled  
+                                 enable host cache
+      --[no-]collector.host.cache.compression  
+                                 enable host cache zstd compression for kvstore values
+      --collector.host.cache.ttl-expires=COLLECTOR.HOST.CACHE.TTL-EXPIRES  
+                                 host cache expiration time
       --collector.hostfact.search=COLLECTOR.HOSTFACT.SEARCH  
                                  search host fact query filter
       --collector.hostfact.include=COLLECTOR.HOSTFACT.INCLUDE  
                                  host fact to include (regex)
       --collector.hostfact.exclude=COLLECTOR.HOSTFACT.EXCLUDE  
                                  host fact to exclude (regex)
-      --collector.hostfact.timeout=30  
+      --collector.hostfact.timeout=30s  
                                  host fact timeout
+      --[no-]collector.hostfact.cache.enabled  
+                                 enable host fact cache
+      --[no-]collector.hostfact.cache.compression  
+                                 enable host fact cache zstd compression for kvstore values
+      --collector.hostfact.cache.ttl-expires=COLLECTOR.HOSTFACT.CACHE.TTL-EXPIRES  
+                                 host fact cache expiration time
       --[no-]cache.enabled       Enable cache
       --cache.ttl-expires=1h     Cache Expiration time
       --[no-]cache.compression   Enable zstd compression for kvstore values
@@ -72,6 +84,7 @@ Flags:
                                  info, warn, error]
       --log.format=logfmt        Output format of log messages. One of: [logfmt, json]
       --[no-]version             Show application version.
+
 ```
 
 ### Metrics Exposed
@@ -120,6 +133,28 @@ This collector return metrics to a dedicated endpoint `/host-metrics`.
 foreman_exporter_host_status_info{build_status="Installed",configuration_status="Active",global_status="OK",name="server.example.com",organization="example"} 1
 ```
 
+If the memory cache is enabled and the cache has expired it is possible to use it even if foreman api is not available (network outage, service restart, slow response...). This could prevent hole in metrics scrapping and alerts flapping. To use it, just pass the uri param `expired-cache=true` in scrape config or curl cmd.
+
+```
+curl http://localhost:11111/host-metrics?expired-cache=true
+```
+
+If the memory cache is enabled, it is possible to force cache regeneration with the param `cache=false`.
+
+```
+curl http://localhost:11111/host-metrics?cache=false
+```
+
+The following metrics have been added:
+```
+# HELP foreman_exporter_host_scrape_timeout 1 if timeout occurs, 0 otherwise
+# TYPE foreman_exporter_host_scrape_timeout gauge
+foreman_exporter_host_scrape_timeout 1
+# HELP foreman_exporter_host_use_expired_cache 1 if using expired cache, 0 otherwise
+# TYPE foreman_exporter_host_use_expired_cache gauge
+foreman_exporter_host_use_expired_cache 1
+```
+
 **Foreman hosts facts**
 
 Enable this collector with the flag `--collector=hostfact`.
@@ -150,8 +185,6 @@ If the memory cache is enabled, it is possible to force cache regeneration with 
 ```
 curl http://localhost:11111/host-facts-metrics?cache=false
 ```
-
-
 
 
 The following metrics have been added:

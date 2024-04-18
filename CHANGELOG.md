@@ -1,3 +1,11 @@
+## 0.0.7 / 2024-04-167
+
+* [FEATURE] enable cache for host collector
+* [FIX] return error if cache not enabled and params given to the query in host fact collector
+* [FIX] remove plural word in endpoint path
+* [FIX] scrape error metric name in host collector
+
+
 ## 0.0.6 / 2024-04-16
 
 * [FEATURE] allow disabling cache in uri param for hostfact collector
