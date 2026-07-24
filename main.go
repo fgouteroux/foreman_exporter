@@ -41,6 +41,7 @@ var (
 	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify.").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
 	concurrency   = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
+	retryMax      = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
 	limit         = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
 	search        = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
 	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
@@ -182,6 +183,7 @@ func main() {
 		*skipTLSVerify,
 		*concurrency,
 		*limit,
+		*retryMax,
 		*search,
 		*collectorHostFactSearch,
 		*collectorHostFactIncludeRegex,

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -183,7 +184,56 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 	l.WithFields(fields(keysAndValues)).Warn(msg)
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger) *HTTPClient {
+// retryAfterBackoff honors the Retry-After response header sent by Foreman
+// when it rate-limits the client (HTTP 429 Too Many Requests or 503 Service
+// Unavailable) before falling back to retryablehttp's exponential backoff.
+// Unlike retryablehttp.DefaultBackoff, it accepts both forms of the header
+// allowed by RFC 7231: delay-seconds ("120") and HTTP-date.
+func retryAfterBackoff(log *logrus.Logger) retryablehttp.Backoff {
+	return func(minWait, maxWait time.Duration, attemptNum int, resp *http.Response) time.Duration {
+		if resp != nil {
+			switch resp.StatusCode {
+			case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+				if sleep, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+					if log != nil {
+						log.WithFields(logrus.Fields{
+							"status":      resp.StatusCode,
+							"retry_after": sleep.String(),
+							"attempt":     attemptNum,
+						}).Warn("honoring Retry-After header from foreman")
+					}
+					return sleep
+				}
+			}
+		}
+		return retryablehttp.DefaultBackoff(minWait, maxWait, attemptNum, resp)
+	}
+}
+
+// parseRetryAfter parses a Retry-After header value in either the delay-seconds
+// ("120") or the HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT") form. It returns
+// false when the header is empty or malformed.
+func parseRetryAfter(v string) (time.Duration, bool) {
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d, true
+		}
+		// The date is in the past, retry immediately.
+		return 0, true
+	}
+	return 0, false
+}
+
+func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit, retryMax int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger) *HTTPClient {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, // #nosec G402
 	}
@@ -197,7 +247,8 @@ func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bo
 
 	client := retryablehttp.NewClient()
 	client.HTTPClient.Transport = roundTripper
-	client.RetryMax = 3
+	client.RetryMax = int(retryMax)
+	client.Backoff = retryAfterBackoff(log)
 
 	if log == nil {
 		client.Logger = nil

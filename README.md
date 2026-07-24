@@ -30,6 +30,7 @@ Flags:
       --password=PASSWORD        Foreman password ($FOREMAN_PASSWORD)
       --[no-]skip-tls-verify     Foreman skip TLS verify. ($FOREMAN_SKIP_TLS_VERIFY)
       --concurrency=4            Max concurrent foreman client http request.
+      --retry-max=3              Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).
       --limit=0                  Foreman client host limit search.
       --search=""                Foreman client host search filter.
       --timeout-offset=0.5s      Offset to subtract from Prometheus-supplied timeout.
