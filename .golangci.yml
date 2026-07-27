@@ -1,23 +1,29 @@
----
+version: "2"
+
 linters:
   enable:
     - revive
   disable:
-    # Disable soon to deprecated[1] linters that lead to false
-    # positives when build tags disable certain files[2]
-    # 1: https://github.com/golangci/golangci-lint/issues/1841
-    # 2: https://github.com/prometheus/node_exporter/issues/1545
-    - deadcode
+    # Disabled historically to avoid false positives with build-tag-disabled
+    # files (inherited from node_exporter).
     - unused
-    - structcheck
-    - varcheck
-
-issues:
-  exclude-rules:
-    - path: _test.go
-      linters:
-        - errcheck
-
-linters-settings:
-  errcheck:
-    exclude: scripts/errcheck_excludes.txt
+  settings:
+    revive:
+      rules:
+        # Documentation-style rules are intentionally relaxed for this exporter.
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+    errcheck:
+      # Used in HTTP handlers, any error is handled by the server itself, and
+      # go-kit logger calls (still used at the dskit boundary in ring.go) never
+      # return meaningful errors.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (github.com/go-kit/log.Logger).Log
+  exclusions:
+    rules:
+      - path: _test.go
+        linters:
+          - errcheck

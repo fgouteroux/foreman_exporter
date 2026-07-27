@@ -16,7 +16,6 @@ import (
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/services"
-	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -177,7 +176,9 @@ func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinM
 
 	// resolver defines how each peers IP address should be resolved.
 	// We use default resolver comes with Go.
-	resolver := dns.NewProvider(log.With(logger, "component", "dns"), reg, dns.GolangResolverType)
+	// maxIdleConnections is only used by the miekgdns resolver; the golang
+	// resolver ignores it.
+	resolver := dns.NewProvider(dns.GolangResolverType, 0, log.With(logger, "component", "dns"), reg)
 
 	config.NodeName = instanceID
 	config.StreamTimeout = 10 * time.Second
@@ -244,7 +245,7 @@ func isLeader(expRing ExporterRing) (bool, error) {
 func ringLeader(r ring.ReadRing) (*ring.InstanceDesc, error) {
 	rs, err := r.Get(leaderToken, ringOp, nil, nil, nil)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to get a healthy instance for token %d", leaderToken)
+		return nil, fmt.Errorf("failed to get a healthy instance for token %d: %w", leaderToken, err)
 	}
 	if len(rs.Instances) != 1 {
 		return nil, fmt.Errorf("got %d instances for token %d (but expected 1)", len(rs.Instances), leaderToken)

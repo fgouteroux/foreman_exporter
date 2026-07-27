@@ -7,23 +7,22 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
-	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/services"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/promlog"
-	"github.com/prometheus/common/promlog/flag"
+	"github.com/prometheus/common/promslog"
+	promslogflag "github.com/prometheus/common/promslog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
 	"github.com/sirupsen/logrus"
-
-	"golang.org/x/exp/slices"
 
 	"github.com/fgouteroux/foreman_exporter/foreman"
 	"github.com/fgouteroux/foreman_exporter/memcache"
@@ -117,29 +116,29 @@ func main() {
 		},
 	}})
 
-	promlogConfig := &promlog.Config{}
-	flag.AddFlags(kingpin.CommandLine, promlogConfig)
+	promslogConfig := &promslog.Config{}
+	promslogflag.AddFlags(kingpin.CommandLine, promslogConfig)
 	kingpin.Version(version.Print("foreman-exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	lvl, _ := logrus.ParseLevel(promlogConfig.Level.String())
+	lvl, _ := logrus.ParseLevel(promslogConfig.Level.String())
 	log.SetLevel(lvl)
 
-	logger := promlog.New(promlogConfig)
+	logger := promslog.New(promslogConfig)
 
 	if *disableExporterMetrics {
 		prometheus.Unregister(collectors.NewGoCollector())
 		prometheus.Unregister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
-	err := prometheus.Register(version.NewCollector("foreman_exporter"))
+	err := prometheus.Register(versioncollector.NewCollector("foreman_exporter"))
 	if err != nil {
-		level.Error(logger).Log("msg", "Error registering version collector", "err", err) // #nosec G104
+		logger.Error("Error registering version collector", "err", err)
 	}
 
-	level.Info(logger).Log("msg", "Starting foreman-exporter", "version", version.Info())   // #nosec G104
-	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext()) // #nosec G104
+	logger.Info("Starting foreman-exporter", "version", version.Info())
+	logger.Info("Build context", "build_context", version.BuildContext())
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.Handle("/static/", http.FileServer(http.FS(staticFiles)))
@@ -151,13 +150,13 @@ func main() {
 	var ringConfig ExporterRing
 	if *ringEnabled {
 		ctx := context.Background()
-		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, logger)
+		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, newGoKitLogger(logger))
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.memberlistsvc) //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.lifecycler)    //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.client)        //nolint:errcheck
 
 		if err != nil {
-			level.Error(logger).Log("err", err) // #nosec G104
+			logger.Error("failed to initialize ring", "err", err)
 			os.Exit(1)
 		}
 
@@ -193,10 +192,10 @@ func main() {
 
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
-		level.Info(logger).Log("msg", "collector host fact enabled") // #nosec G104
+		logger.Info("collector host fact enabled")
 
 		if *collectorHostFactSearch == "" && *collectorHostFactIncludeRegex == nil && *collectorHostFactExcludeRegex == nil {
-			level.Warn(logger).Log("msg", "flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!") // #nosec G104
+			logger.Warn("flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!")
 		}
 
 		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
@@ -224,7 +223,7 @@ func main() {
 			collectorCacheExpiresTTL = *collectorHostFactCacheExpiresTTL
 		}
 
-		level.Info(logger).Log("msg", "collector host fact cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled) // #nosec G104
+		logger.Info("collector host fact cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled)
 
 		cacheCfg := &cacheConfig{
 			Enabled:     collectorCacheEnabled,
@@ -249,7 +248,7 @@ func main() {
 
 	if slices.Contains(*collectorsEnabled, "host") {
 
-		level.Info(logger).Log("msg", "collector host enabled") // #nosec G104
+		logger.Info("collector host enabled")
 
 		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
 			{Desc: "Exported Host metrics", Path: "/host-metrics"},
@@ -276,7 +275,7 @@ func main() {
 			collectorCacheExpiresTTL = *collectorHostCacheExpiresTTL
 		}
 
-		level.Info(logger).Log("msg", "collector host cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled) // #nosec G104
+		logger.Info("collector host cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled)
 
 		cacheCfg := &cacheConfig{
 			Enabled:     collectorCacheEnabled,
@@ -307,7 +306,7 @@ func main() {
 	}
 
 	if err := web.ListenAndServe(server, webConfig, logger); err != nil {
-		level.Error(logger).Log("err", err) // #nosec G104
+		logger.Error("failed to start web server", "err", err)
 		os.Exit(1)
 	}
 }
