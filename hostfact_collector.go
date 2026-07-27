@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -27,7 +26,7 @@ type HostFactCollector struct {
 	Client            *foreman.HTTPClient
 	CacheConfig       *cacheConfig
 	RingConfig        ExporterRing
-	Logger            log.Logger
+	Logger            *slog.Logger
 	Timeout           float64
 	TimeoutOffset     float64
 	PrometheusTimeout float64
@@ -45,26 +44,26 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		// If another replica is the leader, don't expose any metrics from this one.
 		isLeaderNow, err := isLeader(c.RingConfig)
 		if err != nil {
-			level.Warn(c.Logger).Log("msg", "Failed to determine ring leader", "err", err) // #nosec G104
+			c.Logger.Warn("Failed to determine ring leader", "err", err)
 			return
 		}
 		if !isLeaderNow {
-			level.Debug(c.Logger).Log("msg", "skipping metrics collection as this node is not the ring leader") // #nosec G104
+			c.Logger.Debug("skipping metrics collection as this node is not the ring leader")
 			return
 		}
-		level.Debug(c.Logger).Log("msg", "processing metrics collection as this node is the ring leader") // #nosec G104
+		c.Logger.Debug("processing metrics collection as this node is the ring leader")
 
 		if c.CacheConfig.Enabled {
 			ctx := context.Background()
 			cached, err := c.RingConfig.jsonClient.Get(ctx, hostsFactsKey)
 			if err != nil {
-				level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to get '%s' key from kvStore", hostsFactsKey), "err", err) // #nosec G104
+				c.Logger.Error(fmt.Sprintf("Failed to get '%s' key from kvStore", hostsFactsKey), "err", err)
 			}
 
 			if cached != nil {
 
 				if time.Now().After(cached.(*Cache).ExpiresAt) {
-					level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
+					c.Logger.Debug(fmt.Sprintf("cache key '%s' time expired", hostsFactsKey))
 					expired = true
 				} else {
 					found = true
@@ -77,7 +76,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
 					decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
 					if err != nil {
-						level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
+						c.Logger.Error(fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsFactsKey), "err", err)
 						hostFactCollectorScrapeError(ch, 1.0)
 						return
 					}
@@ -86,7 +85,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 
 				err = json.Unmarshal([]byte(content), &data)
 				if err != nil {
-					level.Error(c.Logger).Log("msg", fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsFactsKey), "err", err) // #nosec G104
+					c.Logger.Error(fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsFactsKey), "err", err)
 					hostFactCollectorScrapeError(ch, 1.0)
 					return
 				}
@@ -99,7 +98,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			cached, ok := localCache.Get(hostsFactsKey)
 			if ok {
 				if time.Now().After(cached.ExpiresAt) {
-					level.Debug(c.Logger).Log("msg", fmt.Sprintf("cache key '%s' time expired", hostsFactsKey)) // #nosec G104
+					c.Logger.Debug(fmt.Sprintf("cache key '%s' time expired", hostsFactsKey))
 					expired = true
 				} else {
 					found = true
@@ -148,7 +147,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
 			if hostsFactsError != nil {
 				errVal = 1
-				level.Error(c.Logger).Log("msg", "Failed to get hosts facts filtered", "err", hostsFactsError) // #nosec G104
+				c.Logger.Error("Failed to get hosts facts filtered", "err", hostsFactsError)
 			} else {
 				for host, facts := range hostsFacts {
 					labels := map[string]string{"name": host}
@@ -157,7 +156,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 						replacer := strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
 						factNameSanitized := replacer.Replace(factName)
 						if !labelNameRegexp.MatchString(factNameSanitized) {
-							level.Error(c.Logger).Log("msg", fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp)) // #nosec G104
+							c.Logger.Error(fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp))
 							continue
 						}
 						labels[factNameSanitized] = factValue
@@ -176,12 +175,12 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 					}
 					if hostsFactsError == nil {
 						// update the cache
-						level.Info(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
+						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey))
 						c.updateKV(string(content))
 					}
 				} else if c.CacheConfig.Enabled {
 					// update the local cache
-					level.Info(c.Logger).Log("msg", fmt.Sprintf("updating cache key '%s'", hostsFactsKey)) // #nosec G104
+					c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey))
 					localCache.Set(hostsFactsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
 			}
@@ -200,7 +199,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		// task execution exceed the timeout, task will continue to running and to udpate the cache
 		case <-time.After(deadline):
 			scrapeTimeoutVal = 1
-			level.Warn(c.Logger).Log("msg", fmt.Sprintf("scrape timeout %fs reached", timeout)) // #nosec G104
+			c.Logger.Warn(fmt.Sprintf("scrape timeout %fs reached", timeout))
 		}
 	}
 
@@ -209,9 +208,9 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		if c.CacheConfig.Enabled && c.UseExpiredCache {
 			if len(data) != 0 {
 				expiredCacheVal = 1
-				level.Warn(c.Logger).Log("msg", "use expired cache") // #nosec G104
+				c.Logger.Warn("use expired cache")
 			} else {
-				level.Warn(c.Logger).Log("msg", "cache is empty") // #nosec G104
+				c.Logger.Warn("cache is empty")
 			}
 		} else {
 			data = nil
@@ -291,7 +290,7 @@ func (c HostFactCollector) updateKV(content string) {
 
 	val, err := JSONCodec.Encode(cache)
 	if err != nil {
-		level.Error(c.Logger).Log("msg", fmt.Sprintf("failed to encode data with '%s'", JSONCodec.CodecID()), "err", err) // #nosec G104
+		c.Logger.Error(fmt.Sprintf("failed to encode data with '%s'", JSONCodec.CodecID()), "err", err)
 		return
 	}
 

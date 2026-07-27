@@ -1,5 +1,9 @@
 ## Unreleased
 
+* [CHANGE] go 1.26 and refresh all Go dependencies (dskit, prometheus/common v0.70, exporter-toolkit v0.17, client_golang v1.23)
+* [CHANGE] migrate logging from go-kit/promlog to log/slog (promslog); dskit keeps go-kit via an internal slog adapter so all output stays unified
+* [CHANGE] migrate golangci-lint to v2 (config schema and CI action)
+* [ENHANCEMENT] replace golang.org/x/exp/slices with stdlib slices and github.com/pkg/errors with fmt.Errorf
 * [FEATURE] honor the Retry-After header (delay-seconds and HTTP-date) when foreman rate-limits the client
 * [FEATURE] add `--retry-max` flag to configure the foreman client max retries
 

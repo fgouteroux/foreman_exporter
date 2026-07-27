@@ -315,7 +315,7 @@ func (c *HTTPClient) DoWithContext(ctx context.Context, r *http.Request, data in
 		return err
 	}
 
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
