@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/grafana/dskit/kv/memberlist"
@@ -79,7 +78,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 
 			if cached != nil {
 
-				if time.Now().After(cached.(*Cache).ExpiresAt) {
+				if time.Now().After(time.Unix(0, cached.(*Cache).ExpiresAt)) {
 					c.Logger.Debug(fmt.Sprintf("cache key '%s' time expired", hostsKey))
 					expired = true
 				} else {
@@ -89,18 +88,17 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 				content := cached.(*Cache).Content
 				// zstd decompress data
 				if c.CacheConfig.Compression {
-					contentUnquoted, _ := strconv.Unquote(content)
 					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-					decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
+					decoded, err := decoder.DecodeAll(content, make([]byte, 0, len(content)))
 					if err != nil {
 						c.Logger.Error(fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsKey), "err", err)
 						hostCollectorScrapeError(ch, 1.0)
 						return
 					}
-					content = string(decoded)
+					content = decoded
 				}
 
-				err = json.Unmarshal([]byte(content), &data)
+				err = json.Unmarshal(content, &data)
 				if err != nil {
 					c.Logger.Error(fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsKey), "err", err)
 					hostCollectorScrapeError(ch, 1.0)
@@ -201,13 +199,12 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 					if c.CacheConfig.Compression {
 						// use zstd to compress data
 						encoder, _ := zstd.NewWriter(nil)
-						encoded := encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)))
-						content = []byte(strconv.Quote(string(encoded)))
+						content = encoder.EncodeAll(content, make([]byte, 0, len(content)))
 					}
 					if hostStatusError == nil {
 						// update the cache
 						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey))
-						c.updateKV(string(content))
+						c.updateKV(content)
 					}
 				} else if c.CacheConfig.Enabled {
 					// update the local cache
@@ -313,23 +310,24 @@ func hostCollectorInflightRequestBlocking(ch chan<- prometheus.Metric, val float
 	)
 }
 
-func (c HostCollector) updateKV(content string) {
+func (c HostCollector) updateKV(content []byte) {
+	now := time.Now()
 	cache := &Cache{
 		Content:   content,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(c.CacheConfig.ExpiresTTL),
+		CreatedAt: now.UnixNano(),
+		ExpiresAt: now.Add(c.CacheConfig.ExpiresTTL).UnixNano(),
 	}
 
-	val, err := JSONCodec.Encode(cache)
+	val, err := cacheCodec.Encode(cache)
 	if err != nil {
-		c.Logger.Error(fmt.Sprintf("failed to encode data with '%s'", JSONCodec.CodecID()), "err", err)
+		c.Logger.Error(fmt.Sprintf("failed to encode data with '%s'", cacheCodec.CodecID()), "err", err)
 		return
 	}
 
 	msg := memberlist.KeyValuePair{
 		Key:   hostsKey,
 		Value: val,
-		Codec: JSONCodec.CodecID(),
+		Codec: cacheCodec.CodecID(),
 	}
 
 	msgBytes, _ := msg.Marshal()

@@ -23,5 +23,10 @@ lint:
 security:
 	gosec -exclude-dir _local -quiet ./...
 
+# Regenerate cache.pb.go from cache.proto. Requires protoc and protoc-gen-gogofast
+# (go install github.com/gogo/protobuf/protoc-gen-gogofast@latest) on PATH.
+proto:
+	protoc --gogofast_out=paths=source_relative:. cache.proto
+
 promu:
 	$(PROMU) build

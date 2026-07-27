@@ -97,7 +97,7 @@ func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames strin
 		return config, err
 	}
 
-	jsonClient, err := memberlist.NewClient(store, JSONCodec)
+	jsonClient, err := memberlist.NewClient(store, cacheCodec)
 	if err != nil {
 		return config, err
 	}
@@ -158,7 +158,7 @@ func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinM
 
 	// Codecs is used to tell memberlist library how to serialize/de-serialize the messages between peers.
 	// `ring.GetCode()` uses default, which is protobuf.
-	config.Codecs = []codec.Codec{ring.GetCodec(), JSONCodec}
+	config.Codecs = []codec.Codec{ring.GetCodec(), cacheCodec}
 
 	// TCPTransport defines what addr and port this particular peer should listen for.
 	config.TCPTransport = memberlist.TCPTransportConfig{
