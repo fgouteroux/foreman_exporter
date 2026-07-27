@@ -1,3 +1,9 @@
+## Unreleased
+
+* [FEATURE] honor the Retry-After header (delay-seconds and HTTP-date) when foreman rate-limits the client
+* [FEATURE] add `--retry-max` flag to configure the foreman client max retries
+
+
 ## 0.0.7 / 2024-04-167
 
 * [FEATURE] go 1.22
