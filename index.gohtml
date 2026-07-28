@@ -49,7 +49,6 @@
                     <p class="my-0">
                         {{ with .Ring.Leader }}
                             {{ if .URL }}<a href="{{ .URL }}">{{ .ID }}</a>{{ else }}{{ .ID }}{{ end }}
-                            {{ if .Self }}<span class="badge bg-success ms-1">this instance</span>{{ end }}
                         {{ end }}
                     </p>
                 {{ else }}
