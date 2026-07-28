@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package foremanexporter;
+
+// The generated Go package is "main" (the exporter is a single main package);
+// the path before ';' is only used for import resolution.
+option go_package = "github.com/fgouteroux/foreman_exporter;main";
+
+// Cache is the value stored under the collectors' memberlist KV keys.
+// content holds the (zstd-compressed when enabled) JSON payload; the timestamps
+// are unix-nanoseconds. dskit's proto codec adds snappy framing on top.
+message Cache {
+  bytes content = 1;
+  int64 created_at = 2;
+  int64 expires_at = 3;
+}

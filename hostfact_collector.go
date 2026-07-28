@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -61,29 +60,29 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			if cached != nil {
+				cc := cached.(*Cache)
 
-				if time.Now().After(cached.(*Cache).ExpiresAt) {
+				if time.Now().After(time.Unix(0, cc.ExpiresAt)) {
 					c.Logger.Debug(fmt.Sprintf("cache key '%s' time expired", hostsFactsKey))
 					expired = true
 				} else {
 					found = true
 				}
 
-				content := cached.(*Cache).Content
+				content := cc.Content
 				// zstd decompress data
 				if c.CacheConfig.Compression {
-					contentUnquoted, _ := strconv.Unquote(content)
 					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-					decoded, err := decoder.DecodeAll([]byte(contentUnquoted), make([]byte, 0, len(contentUnquoted)))
+					decoded, err := decoder.DecodeAll(content, make([]byte, 0, len(content)))
 					if err != nil {
 						c.Logger.Error(fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsFactsKey), "err", err)
 						hostFactCollectorScrapeError(ch, 1.0)
 						return
 					}
-					content = string(decoded)
+					content = decoded
 				}
 
-				err = json.Unmarshal([]byte(content), &data)
+				err = json.Unmarshal(content, &data)
 				if err != nil {
 					c.Logger.Error(fmt.Sprintf("Failed to decode key '%s' value from kvStore", hostsFactsKey), "err", err)
 					hostFactCollectorScrapeError(ch, 1.0)
@@ -170,13 +169,12 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 					if c.CacheConfig.Compression {
 						// use zstd to compress data
 						encoder, _ := zstd.NewWriter(nil)
-						encoded := encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)))
-						content = []byte(strconv.Quote(string(encoded)))
+						content = encoder.EncodeAll(content, make([]byte, 0, len(content)))
 					}
 					if hostsFactsError == nil {
 						// update the cache
 						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey))
-						c.updateKV(string(content))
+						c.updateKV(content)
 					}
 				} else if c.CacheConfig.Enabled {
 					// update the local cache
@@ -281,23 +279,24 @@ func hostFactCollectorInflightRequestBlocking(ch chan<- prometheus.Metric, val f
 	)
 }
 
-func (c HostFactCollector) updateKV(content string) {
+func (c HostFactCollector) updateKV(content []byte) {
+	now := time.Now()
 	cache := &Cache{
 		Content:   content,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(c.CacheConfig.ExpiresTTL),
+		CreatedAt: now.UnixNano(),
+		ExpiresAt: now.Add(c.CacheConfig.ExpiresTTL).UnixNano(),
 	}
 
-	val, err := JSONCodec.Encode(cache)
+	val, err := cacheCodec.Encode(cache)
 	if err != nil {
-		c.Logger.Error(fmt.Sprintf("failed to encode data with '%s'", JSONCodec.CodecID()), "err", err)
+		c.Logger.Error(fmt.Sprintf("failed to encode data with '%s'", cacheCodec.CodecID()), "err", err)
 		return
 	}
 
 	msg := memberlist.KeyValuePair{
 		Key:   hostsFactsKey,
 		Value: val,
-		Codec: JSONCodec.CodecID(),
+		Codec: cacheCodec.CodecID(),
 	}
 
 	msgBytes, _ := msg.Marshal()
