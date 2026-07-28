@@ -40,7 +40,7 @@
                         <tbody>
                         {{ range .Ring.Members }}
                             <tr>
-                                <td>{{ .ID }}</td>
+                                <td>{{ if .URL }}<a href="{{ .URL }}">{{ .ID }}</a>{{ else }}{{ .ID }}{{ end }}</td>
                                 <td class="text-muted">{{ .Addr }}</td>
                                 <td>{{ .State }}</td>
                                 <td>

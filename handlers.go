@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
+	"net"
 	"net/http"
 	"path"
 	"sort"
@@ -64,6 +65,35 @@ type ringMember struct {
 	State  string `json:"state"`
 	Leader bool   `json:"leader"`
 	Self   bool   `json:"self"`
+	URL    string `json:"url,omitempty"`
+}
+
+// webURLForAddr builds a link to a member's own web UI. The ring address carries
+// the gossip port, so we swap in the port (and scheme) the client used to reach
+// this node, assuming every node exposes its UI on the same port.
+func webURLForAddr(r *http.Request, ringAddr string) string {
+	host, _, err := net.SplitHostPort(ringAddr)
+	if err != nil {
+		host = ringAddr
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+		return scheme + "://" + net.JoinHostPort(host, port) + "/"
+	}
+	return scheme + "://" + host + "/"
+}
+
+// ringStatusForRequest resolves the ring status and fills each member's web-UI
+// URL based on the incoming request (scheme/port).
+func ringStatusForRequest(r *http.Request, ringCfg ExporterRing) ringStatus {
+	rs := ringStatusFor(ringCfg)
+	for i := range rs.Members {
+		rs.Members[i].URL = webURLForAddr(r, rs.Members[i].Addr)
+	}
+	return rs
 }
 
 // ringStatusFor resolves the current ring members and leader. When the ring is
@@ -162,14 +192,14 @@ func indexHandler(httpPathPrefix string, content *IndexPageContent, static pageS
 	})
 	template.Must(templ.Parse(indexPageHTML))
 
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		err := templ.Execute(w, indexPageContents{
 			LinkGroups: content.GetContent(),
 			Version:    static.Version,
 			Revision:   static.Revision,
 			ForemanURL: static.ForemanURL,
 			Collectors: static.Collectors,
-			Ring:       ringStatusFor(ringCfg),
+			Ring:       ringStatusForRequest(r, ringCfg),
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -180,7 +210,7 @@ func indexHandler(httpPathPrefix string, content *IndexPageContent, static pageS
 // statusHandler exposes the same version/config/ring information as the index
 // page, as JSON, for automation.
 func statusHandler(static pageStatic, ringCfg ExporterRing) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -195,7 +225,7 @@ func statusHandler(static pageStatic, ringCfg ExporterRing) http.HandlerFunc {
 			Revision:   static.Revision,
 			ForemanURL: static.ForemanURL,
 			Collectors: static.Collectors,
-			Ring:       ringStatusFor(ringCfg),
+			Ring:       ringStatusForRequest(r, ringCfg),
 		})
 	}
 }
