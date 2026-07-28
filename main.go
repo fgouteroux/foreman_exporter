@@ -145,10 +145,10 @@ func main() {
 
 	indexPage := newIndexPageContent()
 	indexPage.AddLinks(metricsWeight, "Metrics", []IndexPageLink{
-		{Desc: "Exported metrics", Path: "/metrics"},
+		{Desc: "exporter & foreman client metrics", Path: "/metrics"},
 	})
 	indexPage.AddLinks(defaultWeight, "Status", []IndexPageLink{
-		{Desc: "Status (JSON)", Path: "/status"},
+		{Desc: "status as JSON", Path: "/status"},
 	})
 	var ringConfig ExporterRing
 	if *ringEnabled {
@@ -163,11 +163,9 @@ func main() {
 			os.Exit(1)
 		}
 
-		indexPage.AddLinks(ringWeight, "Ring", []IndexPageLink{
-			{Desc: "Ring status", Path: "/ring"},
-		})
-		indexPage.AddLinks(memberlistWeight, "Memberlist", []IndexPageLink{
-			{Desc: "Membership status", Path: "/memberlist"},
+		indexPage.AddLinks(ringWeight, "Cluster", []IndexPageLink{
+			{Desc: "ring members & token distribution", Path: "/ring"},
+			{Desc: "gossip KV store status", Path: "/memberlist"},
 		})
 
 		http.Handle("/ring", ringConfig.lifecycler)
@@ -202,7 +200,7 @@ func main() {
 		}
 
 		indexPage.AddLinks(hostFactWeight, "Host facts", []IndexPageLink{
-			{Desc: "Scrape host facts", Path: "/host-facts-metrics"},
+			{Desc: "scrape host facts", Path: "/host-facts-metrics"},
 		})
 
 		var collectorCacheEnabled bool
@@ -261,7 +259,7 @@ func main() {
 		logger.Info("collector host enabled")
 
 		indexPage.AddLinks(hostWeight, "Host", []IndexPageLink{
-			{Desc: "Scrape host metrics", Path: "/host-metrics"},
+			{Desc: "scrape host metrics", Path: "/host-metrics"},
 		})
 
 		var collectorCacheEnabled bool

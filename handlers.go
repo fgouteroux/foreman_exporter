@@ -52,11 +52,14 @@ type collectorInfo struct {
 }
 
 // ringStatus is the ring state shown on the index page. It is computed per
-// request since membership and leadership can change at any time.
+// request since membership and leadership can change at any time. The index page
+// only shows the leader; the full member list is kept for the /status endpoint.
 type ringStatus struct {
-	Enabled bool         `json:"enabled"`
-	Err     string       `json:"error,omitempty"`
-	Members []ringMember `json:"members,omitempty"`
+	Enabled   bool         `json:"enabled"`
+	Err       string       `json:"error,omitempty"`
+	Members   []ringMember `json:"members,omitempty"`
+	Leader    ringMember   `json:"-"`
+	HasLeader bool         `json:"-"`
 }
 
 type ringMember struct {
@@ -92,6 +95,10 @@ func ringStatusForRequest(r *http.Request, ringCfg ExporterRing) ringStatus {
 	rs := ringStatusFor(ringCfg)
 	for i := range rs.Members {
 		rs.Members[i].URL = webURLForAddr(r, rs.Members[i].Addr)
+		if rs.Members[i].Leader {
+			rs.Leader = rs.Members[i]
+			rs.HasLeader = true
+		}
 	}
 	return rs
 }

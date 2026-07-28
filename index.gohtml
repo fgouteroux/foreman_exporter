@@ -25,80 +25,36 @@
         </div>
     </div>
 
-    {{ if .Ring.Enabled }}
-        <div class="row service-row border-bottom py-3">
-            <div class="col-sm-3 text-start text-sm-end"><h2>Cluster</h2></div>
-            <div class="col-sm-9">
-                {{ if .Ring.Err }}
-                    <span class="badge bg-warning text-dark">ring unavailable</span>
-                    <span class="text-muted">{{ .Ring.Err }}</span>
-                {{ else }}
-                    <table class="table table-sm align-middle mb-0">
-                        <thead>
-                            <tr><th>Instance</th><th>Address</th><th>State</th><th></th></tr>
-                        </thead>
-                        <tbody>
-                        {{ range .Ring.Members }}
-                            <tr>
-                                <td>{{ if .URL }}<a href="{{ .URL }}">{{ .ID }}</a>{{ else }}{{ .ID }}{{ end }}</td>
-                                <td class="text-muted">{{ .Addr }}</td>
-                                <td>{{ .State }}</td>
-                                <td>
-                                    {{ if .Leader }}<span class="badge bg-primary">leader</span>{{ end }}
-                                    {{ if .Self }}<span class="badge bg-success">this instance</span>{{ end }}
-                                </td>
-                            </tr>
-                        {{ end }}
-                        </tbody>
-                    </table>
-                {{ end }}
-            </div>
-        </div>
-    {{ end }}
-
-    <div class="row service-row border-bottom py-3">
-        <div class="col-sm-3 text-start text-sm-end"><h2>Foreman</h2></div>
-        <div class="col-sm-9"><p class="my-0 text-break">{{ .ForemanURL }}</p></div>
-    </div>
-
-    {{ if .Collectors }}
-        <div class="row service-row border-bottom py-3">
-            <div class="col-sm-3 text-start text-sm-end"><h2>Collectors</h2></div>
-            <div class="col-sm-9">
-                <table class="table table-sm align-middle mb-0">
-                    <thead>
-                        <tr><th>Collector</th><th>Cache</th><th>TTL</th><th>Compression</th></tr>
-                    </thead>
-                    <tbody>
-                    {{ range .Collectors }}
-                        <tr>
-                            <td>{{ .Name }}</td>
-                            <td>
-                                {{ if .CacheEnabled }}<span class="badge bg-success">enabled</span>
-                                {{ else }}<span class="badge bg-secondary">disabled</span>{{ end }}
-                            </td>
-                            <td class="text-muted">{{ if .CacheEnabled }}{{ .TTL }}{{ else }}&mdash;{{ end }}</td>
-                            <td>{{ if .Compression }}zstd{{ else }}&mdash;{{ end }}</td>
-                        </tr>
-                    {{ end }}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    {{ end }}
-
     {{ range $i, $ := .LinkGroups }}
         <div class="row service-row border-bottom py-3">
             <div class="col-sm-3 text-start text-sm-end"><h2>{{ $.Desc }}</h2></div>
             <div class="col-sm-9">
                 <ul class="my-0 list-unstyled">
                     {{ range $.Links }}
-                        <li>
-                            <a href="{{ AddPathPrefix .Path }}">{{ .Desc }}</a>
-                            <span class="text-muted small">{{ .Path }}</span>
-                        </li>
+                        <li><a href="{{ AddPathPrefix .Path }}">{{ .Path }}</a> &mdash; {{ .Desc }}</li>
                     {{ end }}
                 </ul>
+            </div>
+        </div>
+    {{ end }}
+
+    {{ if .Ring.Enabled }}
+        <div class="row service-row border-bottom py-3">
+            <div class="col-sm-3 text-start text-sm-end"><h2>Cluster Leader</h2></div>
+            <div class="col-sm-9">
+                {{ if .Ring.Err }}
+                    <span class="badge bg-warning text-dark">ring unavailable</span>
+                    <span class="text-muted">{{ .Ring.Err }}</span>
+                {{ else if .Ring.HasLeader }}
+                    <p class="my-0">
+                        {{ with .Ring.Leader }}
+                            {{ if .URL }}<a href="{{ .URL }}">{{ .ID }}</a>{{ else }}{{ .ID }}{{ end }}
+                            {{ if .Self }}<span class="badge bg-success ms-1">this instance</span>{{ end }}
+                        {{ end }}
+                    </p>
+                {{ else }}
+                    <span class="text-muted">no leader elected</span>
+                {{ end }}
             </div>
         </div>
     {{ end }}
