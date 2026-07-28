@@ -1,5 +1,8 @@
-## Unreleased
+## 1.1.0 / 2026-07-28
 
+* [BUGFIX] stop a goroutine/memory leak by reusing a shared zstd encoder/decoder instead of creating one (never closed) per scrape, which exhausted the process and collapsed the memberlist cluster under load
+* [BUGFIX] re-enable memberlist anti-entropy (`PushPullInterval`) and add periodic rejoin so nodes reconverge after a restart or transient network blip instead of staying split
+* [BUGFIX] log the resolved cache compression bool instead of the flag pointer
 * [FEATURE] add `foreman_exporter_host_scrape_duration_seconds` and `foreman_exporter_host_facts_scrape_duration_seconds` gauges (and log the duration on cache update) to measure how long a full collector scrape takes
 * [FEATURE] index page: show the ring members and leader, exporter version, foreman url, and per-collector cache config; add a `/status` JSON endpoint; clearer section names and endpoint paths
 
