@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{ if .Ring.Enabled }}<meta http-equiv="refresh" content="30">{{ end }}
 
     <title>Foreman Exporter</title>
 
@@ -16,21 +17,43 @@
 <div class="d-flex flex-column container py-3">
     <div class="header row border-bottom py-3 flex-column-reverse flex-sm-row">
         <div class="col-12 col-sm-9 text-center text-sm-start">
-            <h1>Foreman Exporter</h1>
+            <h1 class="mb-0">Foreman Exporter</h1>
+            {{ if .Version }}<span class="text-muted small">v{{ .Version }}{{ if .Revision }} ({{ .Revision }}){{ end }}</span>{{ end }}
         </div>
         <div class="col-12 col-sm-3 text-center text-sm-end mb-3 mb-sm-0">
             <img alt="Foreman Exporter logo" class="foreman-brand" src="{{ AddPathPrefix "/static/foreman.png" }}">
         </div>
     </div>
+
     {{ range $i, $ := .LinkGroups }}
         <div class="row service-row border-bottom py-3">
             <div class="col-sm-3 text-start text-sm-end"><h2>{{ $.Desc }}</h2></div>
             <div class="col-sm-9">
                 <ul class="my-0 list-unstyled">
                     {{ range $.Links }}
-                        <li><a href="{{ AddPathPrefix .Path }}">{{ .Desc }}</a></li>
+                        <li><a href="{{ AddPathPrefix .Path }}">{{ .Path }}</a> &mdash; {{ .Desc }}</li>
                     {{ end }}
                 </ul>
+            </div>
+        </div>
+    {{ end }}
+
+    {{ if .Ring.Enabled }}
+        <div class="row service-row border-bottom py-3">
+            <div class="col-sm-3 text-start text-sm-end"><h2>Cluster Leader</h2></div>
+            <div class="col-sm-9">
+                {{ if .Ring.Err }}
+                    <span class="badge bg-warning text-dark">ring unavailable</span>
+                    <span class="text-muted">{{ .Ring.Err }}</span>
+                {{ else if .Ring.HasLeader }}
+                    <p class="my-0">
+                        {{ with .Ring.Leader }}
+                            {{ if .URL }}<a href="{{ .URL }}">{{ .ID }}</a>{{ else }}{{ .ID }}{{ end }}
+                        {{ end }}
+                    </p>
+                {{ else }}
+                    <span class="text-muted">no leader elected</span>
+                {{ end }}
             </div>
         </div>
     {{ end }}

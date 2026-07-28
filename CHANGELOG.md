@@ -1,3 +1,7 @@
+## Unreleased
+
+* [FEATURE] index page: show the ring members and leader, exporter version, foreman url, and per-collector cache config; add a `/status` JSON endpoint; clearer section names and endpoint paths
+
 ## 1.0.0 / 2026-07-28
 
 * [CHANGE] go 1.26 and refresh all Go dependencies (dskit, prometheus/common v0.70, exporter-toolkit v0.17, client_golang v1.23)
