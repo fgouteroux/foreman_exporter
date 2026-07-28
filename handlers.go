@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"path"
@@ -25,36 +26,78 @@ func newIndexPageContent() *IndexPageContent {
 
 type indexPageContents struct {
 	LinkGroups []IndexPageLinkGroup
+	Version    string
+	Revision   string
+	ForemanURL string
+	Collectors []collectorInfo
 	Ring       ringStatus
 }
 
-// ringStatus is the ring leader information shown on the index page. It is
-// computed per request since leadership can change at any time.
-type ringStatus struct {
-	Enabled    bool
-	Leader     string // leader instance id
-	LeaderAddr string
-	IsSelf     bool
-	Err        string
+// pageStatic holds the parts of the index page that don't change at runtime.
+// It is captured once when the handlers are built.
+type pageStatic struct {
+	Version    string
+	Revision   string
+	ForemanURL string
+	Collectors []collectorInfo
 }
 
-// ringStatusFor resolves the current ring leader. When the ring is disabled it
-// returns a zero-value (Enabled=false); when the ring is up but no healthy
-// leader can be determined it returns the error for display.
+// collectorInfo summarises an enabled collector's cache configuration.
+type collectorInfo struct {
+	Name         string `json:"name"`
+	CacheEnabled bool   `json:"cache_enabled"`
+	TTL          string `json:"ttl,omitempty"`
+	Compression  bool   `json:"compression"`
+}
+
+// ringStatus is the ring state shown on the index page. It is computed per
+// request since membership and leadership can change at any time.
+type ringStatus struct {
+	Enabled bool         `json:"enabled"`
+	Err     string       `json:"error,omitempty"`
+	Members []ringMember `json:"members,omitempty"`
+}
+
+type ringMember struct {
+	ID     string `json:"id"`
+	Addr   string `json:"addr"`
+	State  string `json:"state"`
+	Leader bool   `json:"leader"`
+	Self   bool   `json:"self"`
+}
+
+// ringStatusFor resolves the current ring members and leader. When the ring is
+// disabled it returns a zero value (Enabled=false); when the ring is up but the
+// members can't be listed it returns the error for display.
 func ringStatusFor(r ExporterRing) ringStatus {
 	if !r.enabled {
 		return ringStatus{}
 	}
-	rl, err := ringLeader(r.client)
+
+	leaderAddr := ""
+	if rl, err := ringLeader(r.client); err == nil {
+		leaderAddr = rl.Addr
+	}
+
+	rs, err := r.client.GetAllHealthy(ringOp)
 	if err != nil {
 		return ringStatus{Enabled: true, Err: err.Error()}
 	}
-	return ringStatus{
-		Enabled:    true,
-		Leader:     rl.Id,
-		LeaderAddr: rl.Addr,
-		IsSelf:     rl.Addr == r.lifecycler.GetInstanceAddr(),
+
+	self := r.lifecycler.GetInstanceAddr()
+	members := make([]ringMember, 0, len(rs.Instances))
+	for _, inst := range rs.Instances {
+		members = append(members, ringMember{
+			ID:     inst.Id,
+			Addr:   inst.Addr,
+			State:  inst.State.String(),
+			Leader: leaderAddr != "" && inst.Addr == leaderAddr,
+			Self:   inst.Addr == self,
+		})
 	}
+	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+
+	return ringStatus{Enabled: true, Members: members}
 }
 
 // IndexPageContent is a map of sections to path -> description.
@@ -110,7 +153,7 @@ func (pc *IndexPageContent) GetContent() []IndexPageLinkGroup {
 //go:embed static
 var staticFiles embed.FS
 
-func indexHandler(httpPathPrefix string, content *IndexPageContent, ringCfg ExporterRing) http.HandlerFunc {
+func indexHandler(httpPathPrefix string, content *IndexPageContent, static pageStatic, ringCfg ExporterRing) http.HandlerFunc {
 	templ := template.New("main")
 	templ.Funcs(map[string]interface{}{
 		"AddPathPrefix": func(link string) string {
@@ -122,11 +165,38 @@ func indexHandler(httpPathPrefix string, content *IndexPageContent, ringCfg Expo
 	return func(w http.ResponseWriter, _ *http.Request) {
 		err := templ.Execute(w, indexPageContents{
 			LinkGroups: content.GetContent(),
+			Version:    static.Version,
+			Revision:   static.Revision,
+			ForemanURL: static.ForemanURL,
+			Collectors: static.Collectors,
 			Ring:       ringStatusFor(ringCfg),
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
+	}
+}
+
+// statusHandler exposes the same version/config/ring information as the index
+// page, as JSON, for automation.
+func statusHandler(static pageStatic, ringCfg ExporterRing) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(struct {
+			Version    string          `json:"version"`
+			Revision   string          `json:"revision"`
+			ForemanURL string          `json:"foreman_url"`
+			Collectors []collectorInfo `json:"collectors"`
+			Ring       ringStatus      `json:"ring"`
+		}{
+			Version:    static.Version,
+			Revision:   static.Revision,
+			ForemanURL: static.ForemanURL,
+			Collectors: static.Collectors,
+			Ring:       ringStatusFor(ringCfg),
+		})
 	}
 }
 

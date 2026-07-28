@@ -1,6 +1,6 @@
 ## Unreleased
 
-* [FEATURE] show the current ring leader on the index page when the ring is enabled
+* [FEATURE] index page: show the ring members and leader, exporter version, foreman url, and per-collector cache config; add a `/status` JSON endpoint; clearer section names and endpoint paths
 
 ## 1.0.0 / 2026-07-28
 

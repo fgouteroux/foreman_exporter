@@ -147,6 +147,9 @@ func main() {
 	indexPage.AddLinks(metricsWeight, "Metrics", []IndexPageLink{
 		{Desc: "Exported metrics", Path: "/metrics"},
 	})
+	indexPage.AddLinks(defaultWeight, "Status", []IndexPageLink{
+		{Desc: "Status (JSON)", Path: "/status"},
+	})
 	var ringConfig ExporterRing
 	if *ringEnabled {
 		ctx := context.Background()
@@ -160,11 +163,11 @@ func main() {
 			os.Exit(1)
 		}
 
-		indexPage.AddLinks(ringWeight, "Exporter", []IndexPageLink{
+		indexPage.AddLinks(ringWeight, "Ring", []IndexPageLink{
 			{Desc: "Ring status", Path: "/ring"},
 		})
 		indexPage.AddLinks(memberlistWeight, "Memberlist", []IndexPageLink{
-			{Desc: "Status", Path: "/memberlist"},
+			{Desc: "Membership status", Path: "/memberlist"},
 		})
 
 		http.Handle("/ring", ringConfig.lifecycler)
@@ -173,7 +176,7 @@ func main() {
 		localCache = memcache.NewLocalCache()
 	}
 
-	http.Handle("/", indexHandler("", indexPage, ringConfig))
+	var collectorsInfo []collectorInfo
 
 	client := foreman.NewHTTPClient(
 		*baseURL,
@@ -198,8 +201,8 @@ func main() {
 			logger.Warn("flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!")
 		}
 
-		indexPage.AddLinks(hostFactWeight, "Hosts Facts Metrics", []IndexPageLink{
-			{Desc: "Exported Host Facts metrics", Path: "/host-facts-metrics"},
+		indexPage.AddLinks(hostFactWeight, "Host facts", []IndexPageLink{
+			{Desc: "Scrape host facts", Path: "/host-facts-metrics"},
 		})
 
 		var collectorCacheEnabled bool
@@ -231,6 +234,13 @@ func main() {
 			ExpiresTTL:  time.Duration(collectorCacheExpiresTTL.Seconds()) * time.Second,
 		}
 
+		collectorsInfo = append(collectorsInfo, collectorInfo{
+			Name:         "hostfact",
+			CacheEnabled: collectorCacheEnabled,
+			TTL:          collectorCacheExpiresTTL.String(),
+			Compression:  collectorCacheCompression,
+		})
+
 		collector := HostFactCollector{
 			Client:        client,
 			Logger:        logger,
@@ -250,8 +260,8 @@ func main() {
 
 		logger.Info("collector host enabled")
 
-		indexPage.AddLinks(hostWeight, "Hosts Metrics", []IndexPageLink{
-			{Desc: "Exported Host metrics", Path: "/host-metrics"},
+		indexPage.AddLinks(hostWeight, "Host", []IndexPageLink{
+			{Desc: "Scrape host metrics", Path: "/host-metrics"},
 		})
 
 		var collectorCacheEnabled bool
@@ -283,6 +293,13 @@ func main() {
 			ExpiresTTL:  time.Duration(collectorCacheExpiresTTL.Seconds()) * time.Second,
 		}
 
+		collectorsInfo = append(collectorsInfo, collectorInfo{
+			Name:         "host",
+			CacheEnabled: collectorCacheEnabled,
+			TTL:          collectorCacheExpiresTTL.String(),
+			Compression:  collectorCacheCompression,
+		})
+
 		collector := HostCollector{
 			Client:                client,
 			Logger:                logger,
@@ -299,6 +316,15 @@ func main() {
 			hostHandler(w, req, collector)
 		})
 	}
+
+	static := pageStatic{
+		Version:    version.Version,
+		Revision:   version.Revision,
+		ForemanURL: (*baseURL).Redacted(),
+		Collectors: collectorsInfo,
+	}
+	http.Handle("/", indexHandler("", indexPage, static, ringConfig))
+	http.Handle("/status", statusHandler(static, ringConfig))
 
 	server := &http.Server{
 		ReadTimeout:       120 * time.Second,

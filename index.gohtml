@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{ if .Ring.Enabled }}<meta http-equiv="refresh" content="30">{{ end }}
 
     <title>Foreman Exporter</title>
 
@@ -16,36 +17,86 @@
 <div class="d-flex flex-column container py-3">
     <div class="header row border-bottom py-3 flex-column-reverse flex-sm-row">
         <div class="col-12 col-sm-9 text-center text-sm-start">
-            <h1>Foreman Exporter</h1>
+            <h1 class="mb-0">Foreman Exporter</h1>
+            {{ if .Version }}<span class="text-muted small">v{{ .Version }}{{ if .Revision }} ({{ .Revision }}){{ end }}</span>{{ end }}
         </div>
         <div class="col-12 col-sm-3 text-center text-sm-end mb-3 mb-sm-0">
             <img alt="Foreman Exporter logo" class="foreman-brand" src="{{ AddPathPrefix "/static/foreman.png" }}">
         </div>
     </div>
+
     {{ if .Ring.Enabled }}
         <div class="row service-row border-bottom py-3">
             <div class="col-sm-3 text-start text-sm-end"><h2>Cluster</h2></div>
             <div class="col-sm-9">
                 {{ if .Ring.Err }}
-                    <span class="badge bg-warning text-dark">leader unknown</span>
+                    <span class="badge bg-warning text-dark">ring unavailable</span>
                     <span class="text-muted">{{ .Ring.Err }}</span>
                 {{ else }}
-                    <p class="my-0">
-                        Ring leader: <strong>{{ .Ring.Leader }}</strong>
-                        <span class="text-muted">({{ .Ring.LeaderAddr }})</span>
-                        {{ if .Ring.IsSelf }}<span class="badge bg-success ms-1">this instance</span>{{ end }}
-                    </p>
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr><th>Instance</th><th>Address</th><th>State</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                        {{ range .Ring.Members }}
+                            <tr>
+                                <td>{{ .ID }}</td>
+                                <td class="text-muted">{{ .Addr }}</td>
+                                <td>{{ .State }}</td>
+                                <td>
+                                    {{ if .Leader }}<span class="badge bg-primary">leader</span>{{ end }}
+                                    {{ if .Self }}<span class="badge bg-success">this instance</span>{{ end }}
+                                </td>
+                            </tr>
+                        {{ end }}
+                        </tbody>
+                    </table>
                 {{ end }}
             </div>
         </div>
     {{ end }}
+
+    <div class="row service-row border-bottom py-3">
+        <div class="col-sm-3 text-start text-sm-end"><h2>Foreman</h2></div>
+        <div class="col-sm-9"><p class="my-0 text-break">{{ .ForemanURL }}</p></div>
+    </div>
+
+    {{ if .Collectors }}
+        <div class="row service-row border-bottom py-3">
+            <div class="col-sm-3 text-start text-sm-end"><h2>Collectors</h2></div>
+            <div class="col-sm-9">
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr><th>Collector</th><th>Cache</th><th>TTL</th><th>Compression</th></tr>
+                    </thead>
+                    <tbody>
+                    {{ range .Collectors }}
+                        <tr>
+                            <td>{{ .Name }}</td>
+                            <td>
+                                {{ if .CacheEnabled }}<span class="badge bg-success">enabled</span>
+                                {{ else }}<span class="badge bg-secondary">disabled</span>{{ end }}
+                            </td>
+                            <td class="text-muted">{{ if .CacheEnabled }}{{ .TTL }}{{ else }}&mdash;{{ end }}</td>
+                            <td>{{ if .Compression }}zstd{{ else }}&mdash;{{ end }}</td>
+                        </tr>
+                    {{ end }}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    {{ end }}
+
     {{ range $i, $ := .LinkGroups }}
         <div class="row service-row border-bottom py-3">
             <div class="col-sm-3 text-start text-sm-end"><h2>{{ $.Desc }}</h2></div>
             <div class="col-sm-9">
                 <ul class="my-0 list-unstyled">
                     {{ range $.Links }}
-                        <li><a href="{{ AddPathPrefix .Path }}">{{ .Desc }}</a></li>
+                        <li>
+                            <a href="{{ AddPathPrefix .Path }}">{{ .Desc }}</a>
+                            <span class="text-muted small">{{ .Path }}</span>
+                        </li>
                     {{ end }}
                 </ul>
             </div>
