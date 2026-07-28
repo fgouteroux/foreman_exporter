@@ -1,3 +1,7 @@
+## Unreleased
+
+* [FEATURE] show the current ring leader on the index page when the ring is enabled
+
 ## 1.0.0 / 2026-07-28
 
 * [CHANGE] go 1.26 and refresh all Go dependencies (dskit, prometheus/common v0.70, exporter-toolkit v0.17, client_golang v1.23)

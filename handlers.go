@@ -25,6 +25,36 @@ func newIndexPageContent() *IndexPageContent {
 
 type indexPageContents struct {
 	LinkGroups []IndexPageLinkGroup
+	Ring       ringStatus
+}
+
+// ringStatus is the ring leader information shown on the index page. It is
+// computed per request since leadership can change at any time.
+type ringStatus struct {
+	Enabled    bool
+	Leader     string // leader instance id
+	LeaderAddr string
+	IsSelf     bool
+	Err        string
+}
+
+// ringStatusFor resolves the current ring leader. When the ring is disabled it
+// returns a zero-value (Enabled=false); when the ring is up but no healthy
+// leader can be determined it returns the error for display.
+func ringStatusFor(r ExporterRing) ringStatus {
+	if !r.enabled {
+		return ringStatus{}
+	}
+	rl, err := ringLeader(r.client)
+	if err != nil {
+		return ringStatus{Enabled: true, Err: err.Error()}
+	}
+	return ringStatus{
+		Enabled:    true,
+		Leader:     rl.Id,
+		LeaderAddr: rl.Addr,
+		IsSelf:     rl.Addr == r.lifecycler.GetInstanceAddr(),
+	}
 }
 
 // IndexPageContent is a map of sections to path -> description.
@@ -80,7 +110,7 @@ func (pc *IndexPageContent) GetContent() []IndexPageLinkGroup {
 //go:embed static
 var staticFiles embed.FS
 
-func indexHandler(httpPathPrefix string, content *IndexPageContent) http.HandlerFunc {
+func indexHandler(httpPathPrefix string, content *IndexPageContent, ringCfg ExporterRing) http.HandlerFunc {
 	templ := template.New("main")
 	templ.Funcs(map[string]interface{}{
 		"AddPathPrefix": func(link string) string {
@@ -90,7 +120,10 @@ func indexHandler(httpPathPrefix string, content *IndexPageContent) http.Handler
 	template.Must(templ.Parse(indexPageHTML))
 
 	return func(w http.ResponseWriter, _ *http.Request) {
-		err := templ.Execute(w, indexPageContents{LinkGroups: content.GetContent()})
+		err := templ.Execute(w, indexPageContents{
+			LinkGroups: content.GetContent(),
+			Ring:       ringStatusFor(ringCfg),
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

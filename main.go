@@ -173,7 +173,7 @@ func main() {
 		localCache = memcache.NewLocalCache()
 	}
 
-	http.Handle("/", indexHandler("", indexPage))
+	http.Handle("/", indexHandler("", indexPage, ringConfig))
 
 	client := foreman.NewHTTPClient(
 		*baseURL,
