@@ -32,12 +32,17 @@ const (
 	// unhealthy instance in the ring will be automatically removed after.
 	ringAutoForgetUnhealthyPeriods = 3
 
-	heartbeatPeriod  = 15 * time.Second
-	heartbeatTimeout = 30 * time.Second
-
 	// leaderToken is the special token that makes the owner the ring leader.
 	leaderToken = 0
 )
+
+// RingLifecyclerConfig holds the ring lifecycler settings exposed on the CLI
+// (see main.go), instead of hardcoded values.
+type RingLifecyclerConfig struct {
+	HeartbeatPeriod                 time.Duration
+	HeartbeatTimeout                time.Duration
+	KeepInstanceInTheRingOnShutdown bool
+}
 
 // ringOp is used as an instance state filter when obtaining instances from the
 // ring. Instances in the LEAVING state are included to help minimise the number
@@ -55,7 +60,7 @@ type ExporterRing struct {
 	jsonClient    *memberlist.Client
 }
 
-func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames string, instancePort int, mlKVConfig memberlist.KVConfig, logger log.Logger) (ExporterRing, error) {
+func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames string, instancePort int, mlKVConfig memberlist.KVConfig, lifecyclerCfg RingLifecyclerConfig, logger log.Logger) (ExporterRing, error) {
 	var config ExporterRing
 	ctx := context.Background()
 
@@ -102,7 +107,7 @@ func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames strin
 		return config, err
 	}
 
-	lfc, err := SimpleRingLifecycler(ringClient, instanceID, instanceAddr, instancePort, instanceInterfaceNamesSlice, logger, reg)
+	lfc, err := SimpleRingLifecycler(ringClient, instanceID, instanceAddr, instancePort, instanceInterfaceNamesSlice, lifecyclerCfg, logger, reg)
 	if err != nil {
 		return config, err
 	}
@@ -193,7 +198,7 @@ func SimpleMemberlistKV(config memberlist.KVConfig, instanceID, instanceAddr str
 
 // SimpleRingLifecycler returns an instance lifecycler for the given `kv.Client`.
 // Usually lifecycler will be part of the server side that act as a single peer.
-func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, instancePort int, instanceInterfaceNames []string, logger log.Logger, reg prometheus.Registerer) (*ring.BasicLifecycler, error) {
+func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, instancePort int, instanceInterfaceNames []string, cfg RingLifecyclerConfig, logger log.Logger, reg prometheus.Registerer) (*ring.BasicLifecycler, error) {
 	var config ring.BasicLifecyclerConfig
 	instanceAddr, err := ring.GetInstanceAddr(instanceAddr, instanceInterfaceNames, logger, false)
 	if err != nil {
@@ -202,17 +207,17 @@ func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, inst
 
 	config.ID = instanceID
 	config.Addr = fmt.Sprintf("%s:%d", instanceAddr, instancePort)
-	config.HeartbeatPeriod = heartbeatPeriod
-	config.HeartbeatTimeout = heartbeatTimeout
+	config.HeartbeatPeriod = cfg.HeartbeatPeriod
+	config.HeartbeatTimeout = cfg.HeartbeatTimeout
 	config.TokensObservePeriod = 0
 	config.NumTokens = ringNumTokens
-	config.KeepInstanceInTheRingOnShutdown = true
+	config.KeepInstanceInTheRingOnShutdown = cfg.KeepInstanceInTheRingOnShutdown
 
 	var delegate ring.BasicLifecyclerDelegate
 
 	delegate = ring.NewInstanceRegisterDelegate(ring.ACTIVE, ringNumTokens)
 	delegate = ring.NewLeaveOnStoppingDelegate(delegate, logger)
-	delegate = ring.NewAutoForgetDelegate(ringAutoForgetUnhealthyPeriods*heartbeatPeriod, delegate, logger)
+	delegate = ring.NewAutoForgetDelegate(ringAutoForgetUnhealthyPeriods*cfg.HeartbeatPeriod, delegate, logger)
 
 	return ring.NewBasicLifecycler(
 		config,

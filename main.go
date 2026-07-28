@@ -79,6 +79,10 @@ var (
 	ringInstanceInterfaceNames = kingpin.Flag("ring.instance-interface-names", "List of network interface names to look up when finding the instance IP address.").String()
 	ringJoinMembers            = kingpin.Flag("ring.join-members", "Other cluster members to join.").String()
 
+	ringHeartbeatPeriod              = kingpin.Flag("ring.heartbeat-period", "Period at which to heartbeat to the ring.").Default("15s").Duration()
+	ringHeartbeatTimeout             = kingpin.Flag("ring.heartbeat-timeout", "Heartbeat timeout after which ring instances are assumed unhealthy.").Default("30s").Duration()
+	ringKeepInstanceInRingOnShutdown = kingpin.Flag("ring.keep-instance-in-ring-on-shutdown", "Keep the instance in the ring on shutdown (removed later by auto-forget).").Default("true").Bool()
+
 	// ringMemberlistKV exposes the whole dskit memberlist KV config on the CLI
 	// (flags registered in main, under the "ring.memberlist." prefix) so every
 	// gossip/transport parameter is tunable per environment instead of hardcoded.
@@ -183,7 +187,12 @@ func main() {
 	var ringConfig ExporterRing
 	if *ringEnabled {
 		ctx := context.Background()
-		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, ringMemberlistKV, newGoKitLogger(logger))
+		lifecyclerCfg := RingLifecyclerConfig{
+			HeartbeatPeriod:                 *ringHeartbeatPeriod,
+			HeartbeatTimeout:                *ringHeartbeatTimeout,
+			KeepInstanceInTheRingOnShutdown: *ringKeepInstanceInRingOnShutdown,
+		}
+		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, ringMemberlistKV, lifecyclerCfg, newGoKitLogger(logger))
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.memberlistsvc) //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.lifecycler)    //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.client)        //nolint:errcheck
