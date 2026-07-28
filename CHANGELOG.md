@@ -7,6 +7,7 @@
 * [ENHANCEMENT] replace golang.org/x/exp/slices with stdlib slices and github.com/pkg/errors with fmt.Errorf
 * [FEATURE] honor the Retry-After header (delay-seconds and HTTP-date) when foreman rate-limits the client
 * [FEATURE] add `--retry-max` flag to configure the foreman client max retries
+* [FEATURE] add `foreman_exporter_client_retry_after_seconds` histogram (labeled by status) for honored Retry-After delays
 
 
 ## 0.0.7 / 2024-04-167

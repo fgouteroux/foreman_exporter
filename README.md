@@ -113,6 +113,10 @@ foreman_exporter_client_request_duration_seconds_count 74
 # HELP foreman_exporter_client_requests_total A counter for all requests from the foreman client.
 # TYPE foreman_exporter_client_requests_total counter
 foreman_exporter_client_requests_total{code="200",method="get"} 74
+# HELP foreman_exporter_client_retry_after_seconds A histogram of Retry-After delays honored from foreman rate-limit responses.
+# TYPE foreman_exporter_client_retry_after_seconds histogram
+foreman_exporter_client_retry_after_seconds_sum{status="429"} 4
+foreman_exporter_client_retry_after_seconds_count{status="429"} 2
 ```
 
 **Foreman hosts status**

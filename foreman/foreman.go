@@ -75,6 +75,14 @@ var (
 		},
 		[]string{"status"},
 	)
+	retryAfterMetric = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "foreman_exporter_client_retry_after_seconds",
+			Help:    "A histogram of Retry-After delays honored from foreman rate-limit responses.",
+			Buckets: []float64{1, 2, 5, 10, 30, 60, 120, 300, 600},
+		},
+		[]string{"status"},
+	)
 	UserAgent = fmt.Sprintf("foreman_exporter/%s", version.Version)
 )
 
@@ -84,6 +92,7 @@ func init() {
 		counterMetric,
 		histVecMetric,
 		inFlightGaugeMetric,
+		retryAfterMetric,
 	)
 }
 
@@ -195,6 +204,7 @@ func retryAfterBackoff(log *logrus.Logger) retryablehttp.Backoff {
 			switch resp.StatusCode {
 			case http.StatusTooManyRequests, http.StatusServiceUnavailable:
 				if sleep, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+					retryAfterMetric.WithLabelValues(strconv.Itoa(resp.StatusCode)).Observe(sleep.Seconds())
 					if log != nil {
 						log.WithFields(logrus.Fields{
 							"status":      resp.StatusCode,
