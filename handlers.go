@@ -71,14 +71,11 @@ type ringMember struct {
 	URL    string `json:"url,omitempty"`
 }
 
-// webURLForAddr builds a link to a member's own web UI. The ring address carries
-// the gossip port, so we swap in the port (and scheme) the client used to reach
-// this node, assuming every node exposes its UI on the same port.
-func webURLForAddr(r *http.Request, ringAddr string) string {
-	host, _, err := net.SplitHostPort(ringAddr)
-	if err != nil {
-		host = ringAddr
-	}
+// webURLForHost builds a link to a member's own web UI from its host (the
+// instance id, i.e. the FQDN). The ring address carries the gossip port, so we
+// swap in the port (and scheme) the client used to reach this node, assuming
+// every node exposes its UI on the same port.
+func webURLForHost(r *http.Request, host string) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -90,11 +87,11 @@ func webURLForAddr(r *http.Request, ringAddr string) string {
 }
 
 // ringStatusForRequest resolves the ring status and fills each member's web-UI
-// URL based on the incoming request (scheme/port).
+// URL (using the member's FQDN) based on the incoming request (scheme/port).
 func ringStatusForRequest(r *http.Request, ringCfg ExporterRing) ringStatus {
 	rs := ringStatusFor(ringCfg)
 	for i := range rs.Members {
-		rs.Members[i].URL = webURLForAddr(r, rs.Members[i].Addr)
+		rs.Members[i].URL = webURLForHost(r, rs.Members[i].ID)
 		if rs.Members[i].Leader {
 			rs.Leader = rs.Members[i]
 			rs.HasLeader = true
