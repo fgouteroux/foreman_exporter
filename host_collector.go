@@ -11,8 +11,6 @@ import (
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/klauspost/compress/zstd"
-
 	"github.com/fgouteroux/foreman_exporter/foreman"
 )
 
@@ -88,8 +86,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 				content := cached.(*Cache).Content
 				// zstd decompress data
 				if c.CacheConfig.Compression {
-					decoder, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-					decoded, err := decoder.DecodeAll(content, make([]byte, 0, len(content)))
+					decoded, err := zstdDecoder.DecodeAll(content, make([]byte, 0, len(content)))
 					if err != nil {
 						c.Logger.Error(fmt.Sprintf("Failed to decompress key '%s' value from kvStore", hostsKey), "err", err)
 						hostCollectorScrapeError(ch, 1.0)
@@ -198,8 +195,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 					content, _ := json.Marshal(hostsData)
 					if c.CacheConfig.Compression {
 						// use zstd to compress data
-						encoder, _ := zstd.NewWriter(nil)
-						content = encoder.EncodeAll(content, make([]byte, 0, len(content)))
+						content = zstdEncoder.EncodeAll(content, make([]byte, 0, len(content)))
 					}
 					if hostStatusError == nil {
 						// update the cache

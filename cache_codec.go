@@ -7,6 +7,7 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/dskit/kv/codec"
 	"github.com/grafana/dskit/kv/memberlist"
+	"github.com/klauspost/compress/zstd"
 )
 
 // cacheCodec serializes Cache values for the collectors' memberlist KV keys.
@@ -14,6 +15,16 @@ import (
 // codec the ring itself uses, and stores the compressed payload as raw bytes
 // rather than a base64/quoted JSON string.
 var cacheCodec = codec.NewProtoCodec("cacheProtoCodec", func() proto.Message { return &Cache{} })
+
+// Shared, reusable zstd encoder/decoder for the collectors' cache payloads.
+// zstd.NewWriter/NewReader each spawn worker goroutines that live until Close();
+// creating them per cache operation (and never closing them, as the old code did)
+// leaks GOMAXPROCS goroutines on every scrape. EncodeAll/DecodeAll are safe for
+// concurrent use, so a single shared instance is created once and reused.
+var (
+	zstdEncoder, _ = zstd.NewWriter(nil)
+	zstdDecoder, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+)
 
 // Merge implements memberlist.Mergeable. A single writer (the ring leader) owns
 // each key, so there is never a genuine multi-writer conflict to reconcile;

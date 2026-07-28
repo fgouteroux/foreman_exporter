@@ -223,7 +223,7 @@ func main() {
 			collectorCacheExpiresTTL = *collectorHostFactCacheExpiresTTL
 		}
 
-		logger.Info("collector host fact cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled)
+		logger.Info("collector host fact cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", collectorCacheCompression)
 
 		cacheCfg := &cacheConfig{
 			Enabled:     collectorCacheEnabled,
@@ -275,7 +275,7 @@ func main() {
 			collectorCacheExpiresTTL = *collectorHostCacheExpiresTTL
 		}
 
-		logger.Info("collector host cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", cacheCompressionEnabled)
+		logger.Info("collector host cache", "enabled", collectorCacheEnabled, "ttl", collectorCacheExpiresTTL, "compression", collectorCacheCompression)
 
 		cacheCfg := &cacheConfig{
 			Enabled:     collectorCacheEnabled,
