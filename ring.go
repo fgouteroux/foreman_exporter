@@ -172,6 +172,11 @@ func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinM
 	// other peers with at least one `joinMembers`.
 	if len(joinMembers) > 0 {
 		config.JoinMembers = joinMembers
+		// Retry the initial join so a node that starts before its peers (or
+		// before the SRV record resolves) keeps trying instead of running solo.
+		config.MinJoinBackoff = 1 * time.Second
+		config.MaxJoinBackoff = 1 * time.Minute
+		config.MaxJoinRetries = 10
 	}
 
 	// resolver defines how each peers IP address should be resolved.
@@ -185,8 +190,12 @@ func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinM
 	config.GossipToTheDeadTime = 30 * time.Second
 	// Enable message compression, reduce bandwidth usage but slightly more CPU usage
 	config.EnableCompression = true
-	// Disable state push/pull syncs completely
-	config.PushPullInterval = 0 * time.Second
+	// Periodic anti-entropy full-state sync so nodes that missed gossip (blip,
+	// restart, transient partition) reconverge instead of staying split.
+	config.PushPullInterval = 30 * time.Second
+	// Periodically re-run the join against the seed nodes (JoinMembers, i.e. the
+	// dnssrv+ SRV record) so a node that lost the cluster can find it again.
+	config.RejoinInterval = 60 * time.Second
 
 	return memberlist.NewKVInitService(
 		&config,
