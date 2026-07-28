@@ -32,12 +32,17 @@ const (
 	// unhealthy instance in the ring will be automatically removed after.
 	ringAutoForgetUnhealthyPeriods = 3
 
-	heartbeatPeriod  = 15 * time.Second
-	heartbeatTimeout = 30 * time.Second
-
 	// leaderToken is the special token that makes the owner the ring leader.
 	leaderToken = 0
 )
+
+// RingLifecyclerConfig holds the ring lifecycler settings exposed on the CLI
+// (see main.go), instead of hardcoded values.
+type RingLifecyclerConfig struct {
+	HeartbeatPeriod                 time.Duration
+	HeartbeatTimeout                time.Duration
+	KeepInstanceInTheRingOnShutdown bool
+}
 
 // ringOp is used as an instance state filter when obtaining instances from the
 // ring. Instances in the LEAVING state are included to help minimise the number
@@ -55,7 +60,7 @@ type ExporterRing struct {
 	jsonClient    *memberlist.Client
 }
 
-func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames string, instancePort int, logger log.Logger) (ExporterRing, error) {
+func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames string, instancePort int, mlKVConfig memberlist.KVConfig, lifecyclerCfg RingLifecyclerConfig, logger log.Logger) (ExporterRing, error) {
 	var config ExporterRing
 	ctx := context.Background()
 
@@ -82,7 +87,7 @@ func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames strin
 	reg = prometheus.WrapRegistererWithPrefix("foreman_exporter_", reg)
 
 	// start memberlist service.
-	memberlistsvc := SimpleMemberlistKV(instanceID, instanceAddr, instancePort, joinMembersSlice, logger, reg)
+	memberlistsvc := SimpleMemberlistKV(mlKVConfig, instanceID, instanceAddr, instancePort, joinMembersSlice, logger, reg)
 	if err := services.StartAndAwaitRunning(ctx, memberlistsvc); err != nil {
 		return config, err
 	}
@@ -102,7 +107,7 @@ func newRing(instanceID, instanceAddr, joinMembers, instanceInterfaceNames strin
 		return config, err
 	}
 
-	lfc, err := SimpleRingLifecycler(ringClient, instanceID, instanceAddr, instancePort, instanceInterfaceNamesSlice, logger, reg)
+	lfc, err := SimpleRingLifecycler(ringClient, instanceID, instanceAddr, instancePort, instanceInterfaceNamesSlice, lifecyclerCfg, logger, reg)
 	if err != nil {
 		return config, err
 	}
@@ -152,50 +157,36 @@ func SimpleRing(store kv.Client, logger log.Logger, reg prometheus.Registerer) (
 // SimpleMemberlistKV returns a memberlist KV as a service. Starting and Stopping the service is upto the caller.
 // Caller can create an instance `kv.Client` from returned service by explicity calling `.GetMemberlistKV()`
 // which can be used as dependency to create a ring or ring lifecycler.
-func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinMembers []string, logger log.Logger, reg prometheus.Registerer) *memberlist.KVInitService {
-	var config memberlist.KVConfig
-	flagext.DefaultValues(&config)
+func SimpleMemberlistKV(config memberlist.KVConfig, instanceID, instanceAddr string, instancePort int, joinMembers []string, logger log.Logger, reg prometheus.Registerer) *memberlist.KVInitService {
+	// config already carries every memberlist setting from the CLI flags (with
+	// dskit defaults). Only override what is specific to this exporter.
 
-	// Codecs is used to tell memberlist library how to serialize/de-serialize the messages between peers.
-	// `ring.GetCode()` uses default, which is protobuf.
+	// Codecs tell the memberlist library how to (de)serialize messages between
+	// peers. `ring.GetCodec()` uses protobuf.
 	config.Codecs = []codec.Codec{ring.GetCodec(), cacheCodec}
 
-	// TCPTransport defines what addr and port this particular peer should listen for.
-	config.TCPTransport = memberlist.TCPTransportConfig{
-		BindPort:  instancePort,
-		BindAddrs: []string{instanceAddr},
-	}
+	// Set the listen addr/port on the EXISTING transport config. Replacing the
+	// whole TCPTransportConfig would zero the transport timeouts (dial, write,
+	// max-concurrent-writes, acquire-writer-timeout); with those at zero,
+	// MaxConcurrentWrites clamps to a single writer and AcquireWriterTimeout=0
+	// drops any packet that can't grab that slot instantly — on a high-latency
+	// (cross-DC) link that silently drops probe ACKs and gossip and makes the
+	// cluster flap. Those values now come from the CLI flags.
+	config.TCPTransport.BindPort = instancePort
+	config.TCPTransport.BindAddrs = []string{instanceAddr}
 
-	// joinMembers is the address of peer who is already in the memberlist group.
-	// Usually be provided if this peer is trying to join existing cluster.
-	// Generally you start very first peer without `joinMembers`, but start every
-	// other peers with at least one `joinMembers`.
+	// The ring instance id is authoritative for the memberlist node name.
+	config.NodeName = instanceID
+
+	// joinMembers comes from --ring.join-members (the dnssrv+ SRV record).
 	if len(joinMembers) > 0 {
 		config.JoinMembers = joinMembers
-		// Retry the initial join so a node that starts before its peers (or
-		// before the SRV record resolves) keeps trying instead of running solo.
-		config.MinJoinBackoff = 1 * time.Second
-		config.MaxJoinBackoff = 1 * time.Minute
-		config.MaxJoinRetries = 10
 	}
 
-	// resolver defines how each peers IP address should be resolved.
-	// We use default resolver comes with Go.
+	// resolver defines how each peer's IP address should be resolved.
 	// maxIdleConnections is only used by the miekgdns resolver; the golang
 	// resolver ignores it.
 	resolver := dns.NewProvider(dns.GolangResolverType, 0, log.With(logger, "component", "dns"), reg)
-
-	config.NodeName = instanceID
-	config.StreamTimeout = 10 * time.Second
-	config.GossipToTheDeadTime = 30 * time.Second
-	// Enable message compression, reduce bandwidth usage but slightly more CPU usage
-	config.EnableCompression = true
-	// Periodic anti-entropy full-state sync so nodes that missed gossip (blip,
-	// restart, transient partition) reconverge instead of staying split.
-	config.PushPullInterval = 30 * time.Second
-	// Periodically re-run the join against the seed nodes (JoinMembers, i.e. the
-	// dnssrv+ SRV record) so a node that lost the cluster can find it again.
-	config.RejoinInterval = 60 * time.Second
 
 	return memberlist.NewKVInitService(
 		&config,
@@ -207,7 +198,7 @@ func SimpleMemberlistKV(instanceID, instanceAddr string, instancePort int, joinM
 
 // SimpleRingLifecycler returns an instance lifecycler for the given `kv.Client`.
 // Usually lifecycler will be part of the server side that act as a single peer.
-func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, instancePort int, instanceInterfaceNames []string, logger log.Logger, reg prometheus.Registerer) (*ring.BasicLifecycler, error) {
+func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, instancePort int, instanceInterfaceNames []string, cfg RingLifecyclerConfig, logger log.Logger, reg prometheus.Registerer) (*ring.BasicLifecycler, error) {
 	var config ring.BasicLifecyclerConfig
 	instanceAddr, err := ring.GetInstanceAddr(instanceAddr, instanceInterfaceNames, logger, false)
 	if err != nil {
@@ -216,17 +207,17 @@ func SimpleRingLifecycler(store kv.Client, instanceID, instanceAddr string, inst
 
 	config.ID = instanceID
 	config.Addr = fmt.Sprintf("%s:%d", instanceAddr, instancePort)
-	config.HeartbeatPeriod = heartbeatPeriod
-	config.HeartbeatTimeout = heartbeatTimeout
+	config.HeartbeatPeriod = cfg.HeartbeatPeriod
+	config.HeartbeatTimeout = cfg.HeartbeatTimeout
 	config.TokensObservePeriod = 0
 	config.NumTokens = ringNumTokens
-	config.KeepInstanceInTheRingOnShutdown = true
+	config.KeepInstanceInTheRingOnShutdown = cfg.KeepInstanceInTheRingOnShutdown
 
 	var delegate ring.BasicLifecyclerDelegate
 
 	delegate = ring.NewInstanceRegisterDelegate(ring.ACTIVE, ringNumTokens)
 	delegate = ring.NewLeaveOnStoppingDelegate(delegate, logger)
-	delegate = ring.NewAutoForgetDelegate(ringAutoForgetUnhealthyPeriods*heartbeatPeriod, delegate, logger)
+	delegate = ring.NewAutoForgetDelegate(ringAutoForgetUnhealthyPeriods*cfg.HeartbeatPeriod, delegate, logger)
 
 	return ring.NewBasicLifecycler(
 		config,

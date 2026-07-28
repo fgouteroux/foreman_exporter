@@ -1,3 +1,8 @@
+## Unreleased
+
+* [BUGFIX] stop zeroing the memberlist TCP transport timeouts: the whole `TCPTransportConfig` was being replaced, leaving `MaxConcurrentWrites`=1 and `AcquireWriterTimeout`=0, which dropped probe ACKs/gossip on high-latency (cross-DC) links and made the cluster flap (`no acks received` / health score pegged). Bind addr/port are now merged into the existing transport config.
+* [CHANGE] expose the full dskit memberlist KV config on the CLI under `--ring.memberlist.*` (gossip, probe, push/pull, rejoin, join-backoff, transport timeouts, …) and the ring lifecycler settings `--ring.heartbeat-period`, `--ring.heartbeat-timeout`, `--ring.keep-instance-in-ring-on-shutdown`, instead of hardcoded values; tune them per environment. Note: `stream-timeout` and `rejoin-interval` now default to dskit values (2s and 0) — set `--ring.memberlist.stream-timeout`/`--ring.memberlist.rejoin-interval` (and, for cross-DC, `--ring.memberlist.max-concurrent-writes` / `--ring.memberlist.acquire-writer-timeout`) as needed.
+
 ## 1.1.0 / 2026-07-28
 
 * [BUGFIX] stop a goroutine/memory leak by reusing a shared zstd encoder/decoder instead of creating one (never closed) per scrape, which exhausted the process and collapsed the memberlist cluster under load

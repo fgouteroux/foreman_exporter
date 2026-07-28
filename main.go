@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/grafana/dskit/services"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -76,6 +79,15 @@ var (
 	ringInstanceInterfaceNames = kingpin.Flag("ring.instance-interface-names", "List of network interface names to look up when finding the instance IP address.").String()
 	ringJoinMembers            = kingpin.Flag("ring.join-members", "Other cluster members to join.").String()
 
+	ringHeartbeatPeriod              = kingpin.Flag("ring.heartbeat-period", "Period at which to heartbeat to the ring.").Default("15s").Duration()
+	ringHeartbeatTimeout             = kingpin.Flag("ring.heartbeat-timeout", "Heartbeat timeout after which ring instances are assumed unhealthy.").Default("30s").Duration()
+	ringKeepInstanceInRingOnShutdown = kingpin.Flag("ring.keep-instance-in-ring-on-shutdown", "Keep the instance in the ring on shutdown (removed later by auto-forget).").Default("true").Bool()
+
+	// ringMemberlistKV exposes the whole dskit memberlist KV config on the CLI
+	// (flags registered in main, under the "ring.memberlist." prefix) so every
+	// gossip/transport parameter is tunable per environment instead of hardcoded.
+	ringMemberlistKV memberlist.KVConfig
+
 	localCache *memcache.MemCache
 
 	labelNameRegexp = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -118,6 +130,28 @@ func main() {
 
 	promslogConfig := &promslog.Config{}
 	promslogflag.AddFlags(kingpin.CommandLine, promslogConfig)
+
+	// Bridge the whole dskit memberlist KV config into kingpin: register it on a
+	// stdlib FlagSet, then mirror each flag into kingpin (a stdlib flag.Value
+	// satisfies kingpin.Value). This exposes every memberlist gossip/transport
+	// parameter under "--ring.memberlist.*". Flags already covered by the
+	// exporter's own ring flags are skipped to avoid duplicates.
+	flagext.DefaultValues(&ringMemberlistKV)
+	mlFlagSet := flag.NewFlagSet("memberlist", flag.ContinueOnError)
+	ringMemberlistKV.RegisterFlagsWithPrefix(mlFlagSet, "ring.")
+	mlSkip := map[string]bool{
+		"ring.memberlist.join":      true, // covered by --ring.join-members
+		"ring.memberlist.nodename":  true, // covered by --ring.instance-id
+		"ring.memberlist.bind-addr": true, // covered by --ring.instance-addr
+		"ring.memberlist.bind-port": true, // covered by --ring.instance-port
+	}
+	mlFlagSet.VisitAll(func(f *flag.Flag) {
+		if mlSkip[f.Name] {
+			return
+		}
+		kingpin.Flag(f.Name, f.Usage).Default(f.DefValue).SetValue(f.Value)
+	})
+
 	kingpin.Version(version.Print("foreman-exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
@@ -153,7 +187,12 @@ func main() {
 	var ringConfig ExporterRing
 	if *ringEnabled {
 		ctx := context.Background()
-		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, newGoKitLogger(logger))
+		lifecyclerCfg := RingLifecyclerConfig{
+			HeartbeatPeriod:                 *ringHeartbeatPeriod,
+			HeartbeatTimeout:                *ringHeartbeatTimeout,
+			KeepInstanceInTheRingOnShutdown: *ringKeepInstanceInRingOnShutdown,
+		}
+		ringConfig, err = newRing(*ringInstanceID, *ringInstanceAddr, *ringJoinMembers, *ringInstanceInterfaceNames, *ringInstancePort, ringMemberlistKV, lifecyclerCfg, newGoKitLogger(logger))
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.memberlistsvc) //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.lifecycler)    //nolint:errcheck
 		defer services.StopAndAwaitTerminated(ctx, ringConfig.client)        //nolint:errcheck
