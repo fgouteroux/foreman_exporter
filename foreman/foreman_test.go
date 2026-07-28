@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // newTestClient builds an HTTPClient pointed at ts with no retries and no logger.
@@ -139,6 +141,27 @@ func TestParseRetryAfter(t *testing.T) {
 				t.Fatalf("parseRetryAfter(%q) = %v, want %v", tc.value, got, tc.wantWait)
 			}
 		})
+	}
+}
+
+func TestRetryAfterBackoffObservesMetric(t *testing.T) {
+	bo := retryAfterBackoff(nil)
+
+	resp429 := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}
+	resp429.Header.Set("Retry-After", "5")
+	if got := bo(0, 0, 0, resp429); got != 5*time.Second {
+		t.Fatalf("backoff(429) = %v, want 5s", got)
+	}
+
+	resp503 := &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}}
+	resp503.Header.Set("Retry-After", "10")
+	if got := bo(0, 0, 0, resp503); got != 10*time.Second {
+		t.Fatalf("backoff(503) = %v, want 10s", got)
+	}
+
+	// One histogram series per honored status; only this test observes it.
+	if n := testutil.CollectAndCount(retryAfterMetric); n != 2 {
+		t.Fatalf("retryAfterMetric series = %d, want 2 (429 and 503)", n)
 	}
 }
 
