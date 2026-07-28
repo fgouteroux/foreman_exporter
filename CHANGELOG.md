@@ -1,5 +1,6 @@
 ## Unreleased
 
+* [FEATURE] add `foreman_exporter_host_scrape_duration_seconds` and `foreman_exporter_host_facts_scrape_duration_seconds` gauges (and log the duration on cache update) to measure how long a full collector scrape takes
 * [FEATURE] index page: show the ring members and leader, exporter version, foreman url, and per-collector cache config; add a `/status` JSON endpoint; clearer section names and endpoint paths
 
 ## 1.0.0 / 2026-07-28
