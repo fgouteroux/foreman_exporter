@@ -195,6 +195,8 @@ func main() {
 
 		logger.Info("collector host fact enabled")
 
+		prometheus.MustRegister(hostFactScrapeDurationMetric)
+
 		if *collectorHostFactSearch == "" && *collectorHostFactIncludeRegex == nil && *collectorHostFactExcludeRegex == nil {
 			logger.Warn("flags '--collector.hostfact.search' and '--collector.hostfact.include' and '--collector.hostfact.exclude' are not defined, it could cause big metrics labels !!")
 		}
@@ -257,6 +259,8 @@ func main() {
 	if slices.Contains(*collectorsEnabled, "host") {
 
 		logger.Info("collector host enabled")
+
+		prometheus.MustRegister(hostScrapeDurationMetric)
 
 		indexPage.AddLinks(hostWeight, "Host", []IndexPageLink{
 			{Desc: "scrape host metrics", Path: "/host-metrics"},

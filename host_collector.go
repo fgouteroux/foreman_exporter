@@ -17,6 +17,11 @@ import (
 var (
 	hostsKey          = "collectors/host"
 	hostCollectorLock = make(chan struct{}, 1)
+
+	hostScrapeDurationMetric = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "foreman_exporter_host_scrape_duration_seconds",
+		Help: "Duration of the last completed host collector scrape of foreman.",
+	})
 )
 
 type HostCollector struct {
@@ -140,6 +145,7 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 
 		// use a goroutine to get result in async mode
 		go func() {
+			start := time.Now()
 
 			if *collectorsLock {
 				// lock and return directly if another request is in progress
@@ -190,6 +196,9 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 					hostsData = append(hostsData, labels)
 				}
 
+				elapsed := time.Since(start)
+				hostScrapeDurationMetric.Set(elapsed.Seconds())
+
 				// Add to the cache
 				if c.RingConfig.enabled && c.CacheConfig.Enabled {
 					content, _ := json.Marshal(hostsData)
@@ -199,12 +208,12 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 					}
 					if hostStatusError == nil {
 						// update the cache
-						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey))
+						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey), "duration", elapsed.String())
 						c.updateKV(content)
 					}
 				} else if c.CacheConfig.Enabled {
 					// update the local cache
-					c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey))
+					c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey), "duration", elapsed.String())
 					localCache.Set(hostsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
 			}
