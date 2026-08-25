@@ -1,3 +1,7 @@
+## 1.2.1 / 2026-08-25
+
+* [BUGFIX] log the actual foreman error when a request fails: the inner `json.Unmarshal` of the error body shadowed the outer `err`, so failures that don't carry a JSON body (client retries exhausted, transport errors) were reported as `invalid character 'X' looking for beginning of value` instead of the real cause
+
 ## 1.2.0 / 2026-07-28
 
 * [BUGFIX] stop zeroing the memberlist TCP transport timeouts: the whole `TCPTransportConfig` was being replaced, leaving `MaxConcurrentWrites`=1 and `AcquireWriterTimeout`=0, which dropped probe ACKs/gossip on high-latency (cross-DC) links and made the cluster flap (`no acks received` / health score pegged). Bind addr/port are now merged into the existing transport config.
