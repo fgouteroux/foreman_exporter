@@ -373,7 +373,7 @@ func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage in
 		hostsCounterMetric.WithLabelValues("failed").Inc()
 
 		var errResult ErrorResult
-		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+		if jsonErr := json.Unmarshal([]byte(err.Error()), &errResult); jsonErr != nil {
 			c.Log.WithFields(logrus.Fields{
 				"path": req.URL.Path,
 				"err":  err.Error(),
@@ -416,7 +416,7 @@ func (c *HTTPClient) GetHostFacts(ctx context.Context, hostID, page, perPage int
 		hostsFactsCounterMetric.WithLabelValues("failed").Inc()
 
 		var errResult ErrorResult
-		if err := json.Unmarshal([]byte(err.Error()), &errResult); err != nil {
+		if jsonErr := json.Unmarshal([]byte(err.Error()), &errResult); jsonErr != nil {
 			c.Log.WithFields(logrus.Fields{
 				"host_id": hostID,
 				"path":    req.URL.Path,
