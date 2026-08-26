@@ -22,6 +22,12 @@ var (
 		Name: "foreman_exporter_host_facts_scrape_duration_seconds",
 		Help: "Duration of the last completed host facts collector scrape of foreman.",
 	})
+
+	// factNameReplacer turns foreman fact names into valid label names. It is
+	// stateless and safe for concurrent use, so it is built once rather than per
+	// fact (this used to be allocated in the innermost loop, i.e. hosts x facts
+	// times on every scrape).
+	factNameReplacer = strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
 )
 
 type HostFactCollector struct {
@@ -34,6 +40,9 @@ type HostFactCollector struct {
 	PrometheusTimeout float64
 	UseCache          bool
 	UseExpiredCache   bool
+	// CacheOnPartial allows a scrape that failed for some hosts to still refresh
+	// the cache. Partial results are always exported either way.
+	CacheOnPartial bool
 }
 
 func (c HostFactCollector) Describe(_ chan<- *prometheus.Desc) {}
@@ -113,6 +122,9 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	var errVal float64
 	var expiredCacheVal float64
 	var scrapeTimeoutVal float64
+	// servedFromScrape tells a fresh (possibly partial) result apart from a
+	// value that came out of the cache.
+	var servedFromScrape bool
 
 	if !found || expired {
 		var timeout float64
@@ -146,44 +158,45 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			var hostsData []map[string]string
+			// A partial result is still a result: the client returns the hosts it
+			// could collect alongside the error, and throwing that away meant a
+			// single rate-limited host wasted the whole (multi-minute) scrape and
+			// left the exporter with no series at all.
 			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
 			if hostsFactsError != nil {
 				errVal = 1
 				c.Logger.Error("Failed to get hosts facts filtered", "err", hostsFactsError)
-			} else {
-				for host, facts := range hostsFacts {
-					labels := map[string]string{"name": host}
-					for factName, factValue := range facts {
+			}
 
-						replacer := strings.NewReplacer("/", "_", "-", "_", "::", "_", ".", "_")
-						factNameSanitized := replacer.Replace(factName)
-						if !labelNameRegexp.MatchString(factNameSanitized) {
-							c.Logger.Error(fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp))
-							continue
-						}
-						labels[factNameSanitized] = factValue
+			for host, facts := range hostsFacts {
+				labels := map[string]string{"name": host}
+				for factName, factValue := range facts {
+					factNameSanitized := factNameReplacer.Replace(factName)
+					if !labelNameRegexp.MatchString(factNameSanitized) {
+						c.Logger.Error(fmt.Sprintf("Invalid Label Name %s. Must match the regex %s", factNameSanitized, labelNameRegexp))
+						continue
 					}
-					hostsData = append(hostsData, labels)
+					labels[factNameSanitized] = factValue
 				}
+				hostsData = append(hostsData, labels)
+			}
 
-				elapsed := time.Since(start)
-				hostFactScrapeDurationMetric.Set(elapsed.Seconds())
+			// Measured on every outcome, so a slow-and-failing scrape is visible.
+			elapsed := time.Since(start)
+			hostFactScrapeDurationMetric.Set(elapsed.Seconds())
 
-				// Add to the cache
-				if c.RingConfig.enabled && c.CacheConfig.Enabled {
+			// Add to the cache. A partial scrape only refreshes it when asked to,
+			// so the cache is not silently degraded by a bad run.
+			if c.CacheConfig.Enabled && len(hostsData) > 0 && (hostsFactsError == nil || c.CacheOnPartial) {
+				c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey), "duration", elapsed.String(), "hosts", len(hostsData), "partial", hostsFactsError != nil)
+				if c.RingConfig.enabled {
 					content, _ := json.Marshal(hostsData)
 					if c.CacheConfig.Compression {
 						// use zstd to compress data
 						content = zstdEncoder.EncodeAll(content, make([]byte, 0, len(content)))
 					}
-					if hostsFactsError == nil {
-						// update the cache
-						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey), "duration", elapsed.String())
-						c.updateKV(content)
-					}
-				} else if c.CacheConfig.Enabled {
-					// update the local cache
-					c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsFactsKey), "duration", elapsed.String())
+					c.updateKV(content)
+				} else {
 					localCache.Set(hostsFactsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
 			}
@@ -191,14 +204,22 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			result <- hostsData
 		}()
 
+		// data currently holds the cached value, which may be expired. Keep it
+		// aside so an empty scrape result cannot overwrite it with nothing.
+		cached := data
+
 		// using a select to return metrics under some conditions
 		select {
 		// task finished before the timeout
-		case data = <-result:
-			close(result)
+		case scraped := <-result:
+			if len(scraped) > 0 {
+				data = scraped
+				servedFromScrape = true
+			} else {
+				data = cached
+			}
 		// another task is already running, no need to wait for the timeout
 		case <-inflight:
-			close(inflight)
 		// task execution exceed the timeout, task will continue to running and to udpate the cache
 		case <-time.After(deadline):
 			scrapeTimeoutVal = 1
@@ -206,16 +227,17 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
-	// return expired cache on scrape error/timeout only if the param expired-cache is true
-	if errVal == 1 || scrapeTimeoutVal == 1 {
-		if c.CacheConfig.Enabled && c.UseExpiredCache {
-			if len(data) != 0 {
-				expiredCacheVal = 1
-				c.Logger.Warn("use expired cache")
-			} else {
+	// The scrape brought back nothing usable: fall back to the cached value,
+	// which may be expired, and only when the caller opted in. A scrape that
+	// succeeded for some hosts is served as-is, expired-cache flag untouched.
+	if !servedFromScrape && (errVal == 1 || scrapeTimeoutVal == 1) {
+		if c.CacheConfig.Enabled && c.UseExpiredCache && len(data) != 0 {
+			expiredCacheVal = 1
+			c.Logger.Warn("use expired cache")
+		} else {
+			if len(data) == 0 {
 				c.Logger.Warn("cache is empty")
 			}
-		} else {
 			data = nil
 		}
 	}

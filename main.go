@@ -69,6 +69,7 @@ var (
 	collectorHostFactCacheEnabled            = kingpin.Flag("collector.hostfact.cache.enabled", "Enable host fact cache, if global 'cache.enabled' is false.").Bool()
 	collectorHostFactCacheCompressionEnabled = kingpin.Flag("collector.hostfact.cache.compression", "Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.").Bool()
 	collectorHostFactCacheExpiresTTL         = kingpin.Flag("collector.hostfact.cache.ttl-expires", "Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.").Duration()
+	collectorHostFactCacheUpdateOnPartial    = kingpin.Flag("collector.hostfact.cache.update-on-partial", "Update the host fact cache from a partial scrape (some hosts failed). Partial results are always exported; this only controls whether they are cached.").Bool()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache for all collectors.").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time for all collectors.").Default("1h").Duration()
@@ -288,13 +289,14 @@ func main() {
 		})
 
 		collector := HostFactCollector{
-			Client:        client,
-			Logger:        logger,
-			RingConfig:    ringConfig,
-			CacheConfig:   cacheCfg,
-			TimeoutOffset: timeoutOffset.Seconds(),
-			Timeout:       collectorHostFactTimeout.Seconds(),
-			UseCache:      true,
+			Client:         client,
+			Logger:         logger,
+			RingConfig:     ringConfig,
+			CacheConfig:    cacheCfg,
+			TimeoutOffset:  timeoutOffset.Seconds(),
+			Timeout:        collectorHostFactTimeout.Seconds(),
+			UseCache:       true,
+			CacheOnPartial: *collectorHostFactCacheUpdateOnPartial,
 		}
 
 		http.HandleFunc("/host-facts-metrics", func(w http.ResponseWriter, req *http.Request) {

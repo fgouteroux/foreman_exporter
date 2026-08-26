@@ -129,6 +129,9 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 	var errVal float64
 	var expiredCacheVal float64
 	var scrapeTimeoutVal float64
+	// servedFromScrape tells a fresh (possibly partial) result apart from a
+	// value that came out of the cache.
+	var servedFromScrape bool
 
 	if !found || expired {
 		var timeout float64
@@ -162,58 +165,60 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			var hostsData []map[string]string
+			// A short or partly failed host list is still usable: the client
+			// returns the hosts it could collect alongside the error, and dropping
+			// them left the exporter with no series at all.
 			hostStatus, hostStatusError := c.Client.GetHostsFiltered(100)
 			if hostStatusError != nil {
 				c.Logger.Error("Failed to get hosts status filtered", "err", hostStatusError)
 				errVal = 1
-			} else {
-				for _, host := range hostStatus {
-					var labels map[string]string
-					data, _ := json.Marshal(HostLabels(host))
-					_ = json.Unmarshal(data, &labels)
-					delete(labels, "id")
+			}
 
-					labelsFiltered := make(map[string]string, len(labels))
-					for k, v := range labels {
-						labelsFiltered[k] = v
-					}
+			for _, host := range hostStatus {
+				var labels map[string]string
+				data, _ := json.Marshal(HostLabels(host))
+				_ = json.Unmarshal(data, &labels)
+				delete(labels, "id")
 
-					for label := range labels {
-
-						if label == "name" {
-							continue
-						}
-						if c.IncludeHostLabelRegex != nil && len(c.IncludeHostLabelRegex.FindStringSubmatch(label)) == 0 {
-							delete(labelsFiltered, label)
-							continue
-						}
-
-						if c.ExcludeHostLabelRegex != nil && len(c.ExcludeHostLabelRegex.FindStringSubmatch(label)) > 0 {
-							delete(labelsFiltered, label)
-						}
-					}
-
-					hostsData = append(hostsData, labels)
+				labelsFiltered := make(map[string]string, len(labels))
+				for k, v := range labels {
+					labelsFiltered[k] = v
 				}
 
-				elapsed := time.Since(start)
-				hostScrapeDurationMetric.Set(elapsed.Seconds())
+				for label := range labels {
 
-				// Add to the cache
-				if c.RingConfig.enabled && c.CacheConfig.Enabled {
+					if label == "name" {
+						continue
+					}
+					if c.IncludeHostLabelRegex != nil && len(c.IncludeHostLabelRegex.FindStringSubmatch(label)) == 0 {
+						delete(labelsFiltered, label)
+						continue
+					}
+
+					if c.ExcludeHostLabelRegex != nil && len(c.ExcludeHostLabelRegex.FindStringSubmatch(label)) > 0 {
+						delete(labelsFiltered, label)
+					}
+				}
+
+				hostsData = append(hostsData, labelsFiltered)
+			}
+
+			// Measured on every outcome, so a slow-and-failing scrape is visible.
+			elapsed := time.Since(start)
+			hostScrapeDurationMetric.Set(elapsed.Seconds())
+
+			// Add to the cache, but never from an incomplete list: it would
+			// silently drop hosts for a whole TTL.
+			if c.CacheConfig.Enabled && hostStatusError == nil && len(hostsData) > 0 {
+				c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey), "duration", elapsed.String(), "hosts", len(hostsData))
+				if c.RingConfig.enabled {
 					content, _ := json.Marshal(hostsData)
 					if c.CacheConfig.Compression {
 						// use zstd to compress data
 						content = zstdEncoder.EncodeAll(content, make([]byte, 0, len(content)))
 					}
-					if hostStatusError == nil {
-						// update the cache
-						c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey), "duration", elapsed.String())
-						c.updateKV(content)
-					}
-				} else if c.CacheConfig.Enabled {
-					// update the local cache
-					c.Logger.Info(fmt.Sprintf("updating cache key '%s'", hostsKey), "duration", elapsed.String())
+					c.updateKV(content)
+				} else {
 					localCache.Set(hostsKey, hostsData, c.CacheConfig.ExpiresTTL)
 				}
 			}
@@ -222,14 +227,22 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 			result <- hostsData
 		}()
 
+		// data currently holds the cached value, which may be expired. Keep it
+		// aside so an empty scrape result cannot overwrite it with nothing.
+		cached := data
+
 		// using a select to return metrics under some conditions
 		select {
 		// task finished before the timeout
-		case data = <-result:
-			close(result)
+		case scraped := <-result:
+			if len(scraped) > 0 {
+				data = scraped
+				servedFromScrape = true
+			} else {
+				data = cached
+			}
 		// another task is already running, no need to wait for the timeout
 		case <-inflight:
-			close(inflight)
 		// task execution exceed the timeout, task will continue to running
 		case <-time.After(deadline):
 			scrapeTimeoutVal = 1
@@ -237,16 +250,17 @@ func (c HostCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
-	// return expired cache on scrape error/timeout only if the param expired-cache is true
-	if errVal == 1 || scrapeTimeoutVal == 1 {
-		if c.CacheConfig.Enabled && c.UseExpiredCache {
-			if len(data) != 0 {
-				expiredCacheVal = 1
-				c.Logger.Warn("use expired cache")
-			} else {
+	// The scrape brought back nothing usable: fall back to the cached value,
+	// which may be expired, and only when the caller opted in. A scrape that
+	// succeeded for some hosts is served as-is, expired-cache flag untouched.
+	if !servedFromScrape && (errVal == 1 || scrapeTimeoutVal == 1) {
+		if c.CacheConfig.Enabled && c.UseExpiredCache && len(data) != 0 {
+			expiredCacheVal = 1
+			c.Logger.Warn("use expired cache")
+		} else {
+			if len(data) == 0 {
 				c.Logger.Warn("cache is empty")
 			}
-		} else {
 			data = nil
 		}
 	}
