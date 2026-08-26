@@ -30,7 +30,14 @@ Flags:
       --password=PASSWORD        Foreman password ($FOREMAN_PASSWORD)
       --[no-]skip-tls-verify     Foreman skip TLS verify. ($FOREMAN_SKIP_TLS_VERIFY)
       --concurrency=4            Max concurrent foreman client http request.
+      --foreman.max-conns-per-host=0  
+                                 Idle connections kept in the pool for the foreman host. Defaults to the concurrency (minimum 4).
       --retry-max=3              Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).
+      --foreman.retry-max-wait=60s  
+                                 Cap on the Retry-After delay honored on rate-limit responses (0 to honor it as-is).
+      --foreman.rate-limit=0     Max foreman requests per second, retries included (0 to disable). Set it just under the server-side quota: a quota of N requests per minute is N/60 here.
+      --foreman.rate-limit-burst=0  
+                                 Token bucket depth for --foreman.rate-limit. Defaults to one second worth of requests.
       --limit=0                  Foreman client host limit search.
       --search=""                Foreman client host search filter.
       --timeout-offset=0.5s      Offset to subtract from Prometheus-supplied timeout.
@@ -63,6 +70,8 @@ Flags:
                                  Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.
       --collector.hostfact.cache.ttl-expires=COLLECTOR.HOSTFACT.CACHE.TTL-EXPIRES  
                                  Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.
+      --[no-]collector.hostfact.cache.update-on-partial  
+                                 Update the host fact cache from a partial scrape (some hosts failed). Partial results are always exported; this only controls whether they are cached.
       --[no-]cache.enabled       Enable cache for all collectors.
       --cache.ttl-expires=1h     Cache Expiration time for all collectors.
       --[no-]cache.compression   Enable zstd cache compression for all collectors in kvstore.
@@ -117,7 +126,23 @@ foreman_exporter_client_requests_total{code="200",method="get"} 74
 # TYPE foreman_exporter_client_retry_after_seconds histogram
 foreman_exporter_client_retry_after_seconds_sum{status="429"} 4
 foreman_exporter_client_retry_after_seconds_count{status="429"} 2
+# HELP foreman_exporter_client_rate_limit_requests_per_second The client-side rate limit currently applied to foreman requests, 0 when disabled.
+# TYPE foreman_exporter_client_rate_limit_requests_per_second gauge
+foreman_exporter_client_rate_limit_requests_per_second 16
+# HELP foreman_exporter_client_rate_limit_delayed_requests_total A counter of foreman client requests that were held back by the client-side rate limiter.
+# TYPE foreman_exporter_client_rate_limit_delayed_requests_total counter
+foreman_exporter_client_rate_limit_delayed_requests_total 7861
+# HELP foreman_exporter_client_rate_limit_wait_seconds_total Cumulative time foreman client requests spent waiting on the client-side rate limiter.
+# TYPE foreman_exporter_client_rate_limit_wait_seconds_total counter
+foreman_exporter_client_rate_limit_wait_seconds_total 18952.3
 ```
+
+`--foreman.rate-limit` is expressed in requests per **second**, while server-side
+quotas are usually stated per minute: a quota of 1000 requests per minute is
+`--foreman.rate-limit=16`. It paces retries too, and the time spent waiting for a
+token is deliberately excluded from `foreman_exporter_client_request_duration_seconds`
+and from `foreman_exporter_client_in_flight_requests`, so those two keep measuring
+foreman rather than the exporter's own throttling.
 
 **Foreman hosts status**
 
@@ -195,6 +220,41 @@ foreman_exporter_host_facts_scrape_timeout 1
 foreman_exporter_host_facts_use_expired_cache 1
 ```
 
+#### Partial results
+
+A collector scrape can fail for some hosts and succeed for the rest: a few hosts
+rate-limited by foreman, or one page of the host list that did not come back.
+**Those partial results are exported**, rather than the whole scrape being
+discarded because of a single failure.
+
+Two consequences for anything alerting on these collectors:
+
+- `foreman_exporter_host_scrape_error` and `foreman_exporter_host_facts_scrape_error`
+  going to `1` no longer implies that the series disappeared. They mean *some*
+  hosts are missing, not *all*. Alert on the series count too if you need to
+  catch a total outage.
+- The host list is paginated on the `subtotal` foreman reports for the search,
+  so a short read is detected: collecting fewer hosts than announced also raises
+  `foreman_exporter_host_scrape_error`, and the hosts that were collected are
+  still exported.
+
+The cache is deliberately more conservative than the exported metrics. The host
+collector never caches an incomplete list, and the host fact collector only
+caches a partial scrape when `--collector.hostfact.cache.update-on-partial` is
+set — otherwise a single bad run would degrade the cache for a whole TTL.
+
+```
+# HELP foreman_exporter_host_facts_scrape_error 1 if there was an error, 0 otherwise
+# TYPE foreman_exporter_host_facts_scrape_error gauge
+foreman_exporter_host_facts_scrape_error 0
+# HELP foreman_exporter_host_facts_scrape_duration_seconds Duration of the last completed host facts collector scrape of foreman.
+# TYPE foreman_exporter_host_facts_scrape_duration_seconds gauge
+foreman_exporter_host_facts_scrape_duration_seconds 527.4
+```
+
+`*_scrape_duration_seconds` is updated on every outcome, including a scrape that
+was slow *and* failed, which is usually the one worth measuring.
+
 ### HA with memberlist
 
 This exporter could be run in cluster mode with memberlist.
@@ -217,6 +277,19 @@ To enable cluster mode, use the following flags:
 One instance of the ring is elected to be the leader and this is the only one which will make request to foreman and export metrics.
 
 If the leader instance goes down, another one will be elected and will start to export metrics.
+
+Each instance exposes the role it currently holds, resolved at scrape time:
+
+```
+# HELP foreman_exporter_node_role Node role, 0 = unknown, 1 = leader, 2 = follower
+# TYPE foreman_exporter_node_role gauge
+foreman_exporter_node_role 1
+```
+
+A ring that cannot be resolved reports `0` (and increments
+`foreman_exporter_ring_leader_lookup_errors_total`) rather than defaulting to
+follower, so a cluster left without a leader is visible. `count(foreman_exporter_node_role == 1)`
+alerts on `0` (no leader) and on `> 1` (split ring).
 
 ![Memberlist](img/memberlist.png)
 
