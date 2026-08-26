@@ -1,3 +1,22 @@
+## 1.3.0 / 2026-08-26
+
+* [BUGFIX] export partial collector results instead of dropping them: both collectors put the whole result handling in the `else` of the error check, so a single rate-limited host (or one failed page) discarded an entire multi-minute scrape and left no series at all. Partial results are now exported, and the cache is only refreshed from them when `--collector.hostfact.cache.update-on-partial` is set
+* [BUGFIX] stop the empty scrape result from clobbering the cached value: the goroutine pushed a nil slice over the result channel, overwriting the (expired) cache that had just been loaded, which made `?expired-cache=true` a no-op on the error path
+* [BUGFIX] apply `--collector.host.labels-include` / `--collector.host.labels-exclude`: the filtered label set was built and then thrown away, the unfiltered one being exported. **The series exported by the host collector change if you use these flags**
+* [BUGFIX] paginate the host list on `subtotal` (how many hosts match the search) instead of `total` (how many hosts exist): with a `--search` set the page count was overestimated and the exporter fetched empty pages. Falls back to `total` when foreman does not report `subtotal`
+* [BUGFIX] return an empty result instead of blocking forever when the search matches no host: the page count was 0 and the collection loop waited on a result that was never produced
+* [BUGFIX] stop panicking on a request error when the foreman client is built without a logger
+* [BUGFIX] report a meaningful error on a short host list (`incomplete host list: expected N hosts, got M (X/Y pages failed)`); the previous message compared a page size to a page-error count
+* [FEATURE] add `foreman_exporter_node_role` (0 = unknown, 1 = leader, 2 = follower), resolved at scrape time, so the leader is identifiable from any replica: `count(foreman_exporter_node_role == 1)` alerts on `0` (no leader) and `> 1` (split ring). A ring that cannot be resolved reports `unknown` instead of defaulting to follower, and increments `foreman_exporter_ring_leader_lookup_errors_total`
+* [ENHANCEMENT] build the foreman client transport from `cleanhttp`'s pooled defaults instead of a bare `http.Transport`, and size the idle connection pool on the concurrency (`--foreman.max-conns-per-host`). The bare transport left `MaxIdleConnsPerHost` at Go's default of 2, so all but two of the in-flight requests paid a full TCP+TLS handshake on every call; it also dropped proxy support and HTTP/2
+* [FEATURE] add `--foreman.rate-limit` (requests per second) and `--foreman.rate-limit-burst` to pace outgoing requests client-side. The limiter sits at the `http.RoundTripper` level so it covers retryablehttp's retries too, and wraps the instrumentation so the time spent waiting is excluded from `foreman_exporter_client_request_duration_seconds` and from the in-flight gauge. New metrics: `foreman_exporter_client_rate_limit_wait_seconds_total`, `foreman_exporter_client_rate_limit_delayed_requests_total`, `foreman_exporter_client_rate_limit_requests_per_second`. Rate limiting bounds throughput where `--concurrency` bounds parallelism; both matter, and which one binds depends on how fast foreman answers
+* [ENHANCEMENT] cap the honored `Retry-After` delay with `--foreman.retry-max-wait` (default 60s), so a long rate-limit response no longer parks a worker on an idle concurrency slot
+* [ENHANCEMENT] only fetch the counters (`per_page=1`) when probing the host list, instead of downloading a full page that was immediately refetched
+* [ENHANCEMENT] update `*_scrape_duration_seconds` on every outcome, so a slow-and-failing scrape is measured too
+* [ENHANCEMENT] build the fact-name label sanitiser once instead of once per fact (it was allocated in the innermost hosts x facts loop on every scrape)
+* [CHANGE] `foreman.NewHTTPClient` now takes a `foreman.ClientConfig` struct instead of 12 positional arguments
+* [FIX] allocate the local cache when `--cache.enabled` is set without the ring and without a per-collector cache flag; it was left nil and dereferenced on the first scrape
+
 ## 1.2.1 / 2026-08-25
 
 * [BUGFIX] log the actual foreman error when a request fails: the inner `json.Unmarshal` of the error body shadowed the outer `err`, so failures that don't carry a JSON body (client retries exhausted, transport errors) were reported as `invalid character 'X' looking for beginning of value` instead of the real cause

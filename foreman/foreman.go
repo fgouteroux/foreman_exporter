@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/sirupsen/logrus"
 )
@@ -93,6 +94,9 @@ func init() {
 		histVecMetric,
 		inFlightGaugeMetric,
 		retryAfterMetric,
+		rateLimitWaitMetric,
+		rateLimitDelayedMetric,
+		rateLimitMetric,
 	)
 }
 
@@ -102,10 +106,16 @@ type ErrorResult struct {
 }
 
 type HostResponse struct {
-	Total   int64  `json:"total"`
-	Page    int64  `json:"page"`
-	PerPage int64  `json:"per_page"`
-	Results []Host `json:"results"`
+	Total int64 `json:"total"`
+	// Subtotal is how many records match the search. Foreman sets it equal to
+	// Total when no search is given; Total itself always counts every record,
+	// so paginating on Total overshoots as soon as a search filter is set. It is
+	// a pointer so that a search matching nothing (subtotal 0) is not mistaken
+	// for a foreman version that does not report the field at all.
+	Subtotal *int64 `json:"subtotal"`
+	Page     int64  `json:"page"`
+	PerPage  int64  `json:"per_page"`
+	Results  []Host `json:"results"`
 }
 
 type HostFactsResponse struct {
@@ -198,17 +208,27 @@ func (l *LeveledLogrus) Warn(msg string, keysAndValues ...interface{}) {
 // Unavailable) before falling back to retryablehttp's exponential backoff.
 // Unlike retryablehttp.DefaultBackoff, it accepts both forms of the header
 // allowed by RFC 7231: delay-seconds ("120") and HTTP-date.
-func retryAfterBackoff(log *logrus.Logger) retryablehttp.Backoff {
+//
+// The honored delay is capped at retryMaxWait (0 disables the cap): foreman can
+// answer with minutes or hours, and a retry sleeping that long keeps holding a
+// concurrency slot while doing nothing.
+func retryAfterBackoff(log *logrus.Logger, retryMaxWait time.Duration) retryablehttp.Backoff {
 	return func(minWait, maxWait time.Duration, attemptNum int, resp *http.Response) time.Duration {
 		if resp != nil {
 			switch resp.StatusCode {
 			case http.StatusTooManyRequests, http.StatusServiceUnavailable:
 				if sleep, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+					capped := retryMaxWait > 0 && sleep > retryMaxWait
+					if capped {
+						sleep = retryMaxWait
+					}
+					// Observe the delay actually waited, not the advertised one.
 					retryAfterMetric.WithLabelValues(strconv.Itoa(resp.StatusCode)).Observe(sleep.Seconds())
 					if log != nil {
 						log.WithFields(logrus.Fields{
 							"status":      resp.StatusCode,
 							"retry_after": sleep.String(),
+							"capped":      capped,
 							"attempt":     attemptNum,
 						}).Warn("honoring Retry-After header from foreman")
 					}
@@ -243,41 +263,111 @@ func parseRetryAfter(v string) (time.Duration, bool) {
 	return 0, false
 }
 
-func NewHTTPClient(baseURL *url.URL, username, password string, skipTLSVerify bool, concurrency, limit, retryMax int64, search, searchHostFact string, includeHostFactRegex, excludeHostFactRegex *regexp.Regexp, log *logrus.Logger) *HTTPClient {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, // #nosec G402
+// ClientConfig holds the foreman HTTP client settings. It replaces the long
+// positional argument list NewHTTPClient used to take, so adding a knob no
+// longer risks silently swapping two same-typed arguments at a call site.
+type ClientConfig struct {
+	BaseURL       *url.URL
+	Username      string
+	Password      string
+	SkipTLSVerify bool
+
+	// Concurrency caps the in-flight requests fanned out per collector.
+	Concurrency int64
+	// MaxConnsPerHost sizes the idle connection pool. 0 derives it from
+	// Concurrency. It is not a hard cap on open connections: both collectors can
+	// fan out at the same time, so capping would make them queue on the
+	// transport instead of on their own semaphore.
+	MaxConnsPerHost int64
+	Limit           int64
+	RetryMax        int64
+	// RetryMaxWait caps the Retry-After delay honored on 429/503 (0 = no cap).
+	RetryMaxWait time.Duration
+	// RateLimit paces outgoing requests, in requests per second (0 = disabled).
+	// It bounds throughput, where Concurrency bounds parallelism: the two are
+	// independent, and which one binds depends on how fast foreman answers.
+	RateLimit float64
+	// RateLimitBurst is the token bucket depth. 0 derives it from RateLimit.
+	RateLimitBurst int64
+
+	Search               string
+	SearchHostFact       string
+	IncludeHostFactRegex *regexp.Regexp
+	ExcludeHostFactRegex *regexp.Regexp
+
+	Log *logrus.Logger
+}
+
+// resolveIdleConns derives the idle pool size from the configured value,
+// falling back to the concurrency with a small floor.
+func resolveIdleConns(maxConnsPerHost, concurrency int64) int {
+	if maxConnsPerHost > 0 {
+		return int(maxConnsPerHost)
 	}
+	return int(max(concurrency, 4))
+}
+
+// newTransport builds the client transport on top of cleanhttp's pooled
+// defaults. Building a bare &http.Transport{} (as this code used to) drops
+// Proxy, dial keepalives and HTTP/2, and — the expensive part — leaves
+// MaxIdleConnsPerHost at Go's default of 2: with a concurrency of 50, all but
+// two of the in-flight requests then pay a fresh TCP+TLS handshake on every
+// single call, and foreman pays for as many handshakes.
+//
+// Only the idle pool is sized. MaxConnsPerHost is deliberately left unset: it
+// is a hard cap on open connections, and both collectors can fan out at once,
+// so capping it at the concurrency would serialise them.
+func newTransport(skipTLSVerify bool, idleConnsPerHost int) *http.Transport {
+	t := cleanhttp.DefaultPooledTransport()
+	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: skipTLSVerify} // #nosec G402
+	if t.MaxIdleConnsPerHost < idleConnsPerHost {
+		t.MaxIdleConnsPerHost = idleConnsPerHost
+	}
+	if t.MaxIdleConns < t.MaxIdleConnsPerHost {
+		t.MaxIdleConns = t.MaxIdleConnsPerHost
+	}
+	return t
+}
+
+func NewHTTPClient(cfg ClientConfig) *HTTPClient {
+	transport := newTransport(cfg.SkipTLSVerify, resolveIdleConns(cfg.MaxConnsPerHost, cfg.Concurrency))
 
 	// Wrap the default RoundTripper with middleware.
-	roundTripper := promhttp.InstrumentRoundTripperInFlight(inFlightGaugeMetric,
+	var roundTripper http.RoundTripper = promhttp.InstrumentRoundTripperInFlight(inFlightGaugeMetric,
 		promhttp.InstrumentRoundTripperCounter(counterMetric,
 			promhttp.InstrumentRoundTripperDuration(histVecMetric, transport),
 		),
 	)
 
+	// The limiter goes outermost so the wait is excluded from the request
+	// duration histogram and from the in-flight gauge.
+	if limiter := newRateLimiter(cfg.RateLimit, cfg.RateLimitBurst); limiter != nil {
+		roundTripper = &rateLimitedRoundTripper{next: roundTripper, limiter: limiter}
+	}
+
 	client := retryablehttp.NewClient()
 	client.HTTPClient.Transport = roundTripper
-	client.RetryMax = int(retryMax)
-	client.Backoff = retryAfterBackoff(log)
+	client.RetryMax = int(cfg.RetryMax)
+	client.Backoff = retryAfterBackoff(cfg.Log, cfg.RetryMaxWait)
 
-	if log == nil {
+	if cfg.Log == nil {
 		client.Logger = nil
 	} else {
-		client.Logger = &LeveledLogrus{log}
+		client.Logger = &LeveledLogrus{cfg.Log}
 	}
 
 	return &HTTPClient{
 		client:               client,
-		BaseURL:              baseURL,
-		Username:             username,
-		Password:             password,
-		Concurrency:          concurrency,
-		Limit:                limit,
-		Search:               search,
-		SearchHostFact:       searchHostFact,
-		IncludeHostFactRegex: includeHostFactRegex,
-		ExcludeHostFactRegex: excludeHostFactRegex,
-		Log:                  log,
+		BaseURL:              cfg.BaseURL,
+		Username:             cfg.Username,
+		Password:             cfg.Password,
+		Concurrency:          cfg.Concurrency,
+		Limit:                cfg.Limit,
+		Search:               cfg.Search,
+		SearchHostFact:       cfg.SearchHostFact,
+		IncludeHostFactRegex: cfg.IncludeHostFactRegex,
+		ExcludeHostFactRegex: cfg.ExcludeHostFactRegex,
+		Log:                  cfg.Log,
 	}
 }
 
@@ -344,6 +434,22 @@ func (c *HTTPClient) DoWithContext(ctx context.Context, r *http.Request, data in
 	return errors.New(string(body))
 }
 
+// logWarn and logInfo go through the optional client logger: Log may be nil,
+// and the request error paths used to dereference it and panic.
+func (c *HTTPClient) logWarn(msg string, fields logrus.Fields) {
+	if c.Log == nil {
+		return
+	}
+	c.Log.WithFields(fields).Warn(msg)
+}
+
+func (c *HTTPClient) logInfof(format string, args ...interface{}) {
+	if c.Log == nil {
+		return
+	}
+	c.Log.Infof(format, args...)
+}
+
 func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage int64) (HostResponse, error) {
 	var result HostResponse
 
@@ -374,16 +480,16 @@ func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage in
 
 		var errResult ErrorResult
 		if jsonErr := json.Unmarshal([]byte(err.Error()), &errResult); jsonErr != nil {
-			c.Log.WithFields(logrus.Fields{
+			c.logWarn("failed to get hosts", logrus.Fields{
 				"path": req.URL.Path,
 				"err":  err.Error(),
-			}).Warn("failed to get hosts")
+			})
 		} else {
-			c.Log.WithFields(logrus.Fields{
+			c.logWarn("failed to get hosts", logrus.Fields{
 				"path":   req.URL.Path,
 				"status": errResult.Status,
 				"err":    errResult.Error,
-			}).Warn("failed to get hosts")
+			})
 		}
 		return result, err
 	}
@@ -417,18 +523,18 @@ func (c *HTTPClient) GetHostFacts(ctx context.Context, hostID, page, perPage int
 
 		var errResult ErrorResult
 		if jsonErr := json.Unmarshal([]byte(err.Error()), &errResult); jsonErr != nil {
-			c.Log.WithFields(logrus.Fields{
+			c.logWarn("failed to get host facts", logrus.Fields{
 				"host_id": hostID,
 				"path":    req.URL.Path,
 				"err":     err.Error(),
-			}).Warn("failed to get host facts")
+			})
 		} else {
-			c.Log.WithFields(logrus.Fields{
+			c.logWarn("failed to get host facts", logrus.Fields{
 				"host_id": hostID,
 				"path":    req.URL.Path,
 				"status":  errResult.Status,
 				"err":     errResult.Error,
-			}).Warn("failed to get host facts")
+			})
 		}
 
 		return result, err
@@ -453,6 +559,10 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 		close(semaphoreChan)
 		close(resultsChan)
 	}()
+
+	if len(hosts) == 0 {
+		return nil
+	}
 
 	start := time.Now()
 	// keen an index and loop through every host we will send a request to
@@ -510,6 +620,30 @@ func (c *HTTPClient) GetHostFactsWithConcurrency(hosts []Host) []HostFactsWithCo
 	return results
 }
 
+// expectedHosts returns how many hosts foreman says match the search. Subtotal
+// is the count for the current search and equals Total when no search is set;
+// Total on its own counts every host, so paginating on it makes the exporter
+// request empty pages as soon as --search is used. Fall back to Total for
+// foreman versions that do not report subtotal.
+func expectedHosts(resp HostResponse) int64 {
+	if resp.Subtotal != nil {
+		return *resp.Subtotal
+	}
+	return resp.Total
+}
+
+// pageCount returns how many pages cover expected hosts at perPage per page,
+// clamped by the client --limit.
+func (c *HTTPClient) pageCount(expected, perPage int64) int64 {
+	if perPage <= 0 || expected <= 0 {
+		return 0
+	}
+	if c.Limit != 0 && c.Limit < expected {
+		expected = c.Limit
+	}
+	return int64(math.Ceil(float64(expected) / float64(perPage)))
+}
+
 func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string]string, error) {
 	if c.Limit != 0 && c.Limit < perPage {
 		perPage = int64(c.Limit)
@@ -523,14 +657,13 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	}
 	hosts := hostsFirstPage.Results
 
-	var pages int64
-	if c.Limit != 0 && c.Limit <= perPage {
-		pages = 1
-	} else if c.Limit > perPage {
-		pages = int64(math.Ceil(float64(c.Limit) / float64(perPage)))
-	} else {
-		pages = int64(math.Ceil(float64(hostsFirstPage.Total) / float64(hostsFirstPage.PerPage)))
+	// Page on the echoed per_page: foreman may clamp the requested value.
+	effPerPage := hostsFirstPage.PerPage
+	if effPerPage <= 0 {
+		effPerPage = perPage
 	}
+	expected := expectedHosts(hostsFirstPage)
+	pages := c.pageCount(expected, effPerPage)
 
 	for page := hostsFirstPage.Page + 1; page <= pages; page++ {
 		hostsPage, err := c.GetHosts(ctx, "true", page, perPage)
@@ -542,7 +675,7 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	}
 
 	hostsTotal := len(hosts)
-	c.Log.Infof("found %d hosts", hostsTotal)
+	c.logInfof("found %d hosts", hostsTotal)
 
 	results := c.GetHostFactsWithConcurrency(hosts)
 
@@ -589,22 +722,22 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 	}
 
 	ctx := context.Background()
-	hostsFirstPage, err := c.GetHosts(ctx, "true", 1, perPage)
+	// Only the counters are needed here; the pages themselves are fetched below
+	// with thin=false. Asking for a single row keeps this probe cheap instead of
+	// downloading a full page that is then thrown away and refetched.
+	hostsFirstPage, err := c.GetHosts(ctx, "true", 1, 1)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot get foreman hosts: %v", err)
 		return nil, errMsg
 	}
 
-	var pages int64
-	if c.Limit != 0 && c.Limit <= perPage {
-		pages = 1
-	} else if c.Limit > perPage {
-		pages = int64(math.Ceil(float64(c.Limit) / float64(perPage)))
-	} else {
-		pages = int64(math.Ceil(float64(hostsFirstPage.Total) / float64(hostsFirstPage.PerPage)))
+	expected := expectedHosts(hostsFirstPage)
+	pages := c.pageCount(expected, perPage)
+	if pages == 0 {
+		return nil, nil
 	}
 
-	var pagesSlice []int64
+	pagesSlice := make([]int64, 0, pages)
 	for i := int64(1); i <= pages; i++ {
 		pagesSlice = append(pagesSlice, i)
 	}
@@ -622,9 +755,13 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 		hostResults = append(hostResults, item.Result.Results...)
 	}
 
-	if errCount > 0 {
-		hostsTotal := len(hostsFirstPage.Results)
-		return hostResults, fmt.Errorf("expected '%d' got '%d'", hostsTotal, hostsTotal-errCount)
+	// Report a short read so the caller can tell a partial list from a complete
+	// one. The hosts collected so far are returned either way.
+	if c.Limit != 0 && c.Limit < expected {
+		expected = c.Limit
+	}
+	if errCount > 0 || int64(len(hostResults)) < expected {
+		return hostResults, fmt.Errorf("incomplete host list: expected %d hosts, got %d (%d/%d pages failed)", expected, len(hostResults), errCount, len(pagesSlice))
 	}
 
 	return hostResults, nil
@@ -646,6 +783,10 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 		close(semaphoreChan)
 		close(resultsChan)
 	}()
+
+	if len(pages) == 0 {
+		return nil
+	}
 
 	start := time.Now()
 	// keen an index and loop through every host we will send a request to

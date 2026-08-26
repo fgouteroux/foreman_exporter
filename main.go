@@ -42,11 +42,15 @@ var (
 	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
 	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify.").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
-	concurrency   = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
-	retryMax      = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
-	limit         = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
-	search        = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
-	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
+	concurrency     = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
+	maxConnsPerHost = kingpin.Flag("foreman.max-conns-per-host", "Idle connections kept in the pool for the foreman host. Defaults to the concurrency (minimum 4).").Default("0").Int64()
+	retryMax        = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
+	retryMaxWait    = kingpin.Flag("foreman.retry-max-wait", "Cap on the Retry-After delay honored on rate-limit responses (0 to honor it as-is).").Default("60s").Duration()
+	rateLimit       = kingpin.Flag("foreman.rate-limit", "Max foreman requests per second, retries included (0 to disable). Set it just under the server-side quota: a quota of N requests per minute is N/60 here.").Default("0").Float64()
+	rateLimitBurst  = kingpin.Flag("foreman.rate-limit-burst", "Token bucket depth for --foreman.rate-limit. Defaults to one second worth of requests.").Default("0").Int64()
+	limit           = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
+	search          = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
+	timeoutOffset   = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
 	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors.").Bool()
@@ -67,6 +71,7 @@ var (
 	collectorHostFactCacheEnabled            = kingpin.Flag("collector.hostfact.cache.enabled", "Enable host fact cache, if global 'cache.enabled' is false.").Bool()
 	collectorHostFactCacheCompressionEnabled = kingpin.Flag("collector.hostfact.cache.compression", "Enable host fact zstd cache compression for kvstore values, if global 'cache.compression' is false.").Bool()
 	collectorHostFactCacheExpiresTTL         = kingpin.Flag("collector.hostfact.cache.ttl-expires", "Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.").Duration()
+	collectorHostFactCacheUpdateOnPartial    = kingpin.Flag("collector.hostfact.cache.update-on-partial", "Update the host fact cache from a partial scrape (some hosts failed). Partial results are always exported; this only controls whether they are cached.").Bool()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache for all collectors.").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time for all collectors.").Default("1h").Duration()
@@ -209,26 +214,38 @@ func main() {
 
 		http.Handle("/ring", ringConfig.lifecycler)
 		http.Handle("/memberlist", memberlistStatusHandler("", ringConfig.memberlistsvc))
-	} else if *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
+
+		// Only the leader collects from foreman, so expose which role this
+		// instance holds to make the other metrics readable across replicas.
+		prometheus.MustRegister(ringLeaderLookupErrorsMetric)
+		prometheus.MustRegister(newNodeRoleCollector(ringConfig, logger))
+	} else if *cacheEnabled || *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
+		// Without the ring the collectors read localCache whenever their cache is
+		// enabled, including through the global --cache.enabled: not allocating it
+		// here left a nil map to be dereferenced on the first scrape.
 		localCache = memcache.NewLocalCache()
 	}
 
 	var collectorsInfo []collectorInfo
 
-	client := foreman.NewHTTPClient(
-		*baseURL,
-		*username,
-		*password,
-		*skipTLSVerify,
-		*concurrency,
-		*limit,
-		*retryMax,
-		*search,
-		*collectorHostFactSearch,
-		*collectorHostFactIncludeRegex,
-		*collectorHostFactExcludeRegex,
-		log,
-	)
+	client := foreman.NewHTTPClient(foreman.ClientConfig{
+		BaseURL:              *baseURL,
+		Username:             *username,
+		Password:             *password,
+		SkipTLSVerify:        *skipTLSVerify,
+		Concurrency:          *concurrency,
+		MaxConnsPerHost:      *maxConnsPerHost,
+		Limit:                *limit,
+		RetryMax:             *retryMax,
+		RetryMaxWait:         *retryMaxWait,
+		RateLimit:            *rateLimit,
+		RateLimitBurst:       *rateLimitBurst,
+		Search:               *search,
+		SearchHostFact:       *collectorHostFactSearch,
+		IncludeHostFactRegex: *collectorHostFactIncludeRegex,
+		ExcludeHostFactRegex: *collectorHostFactExcludeRegex,
+		Log:                  log,
+	})
 
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
@@ -281,13 +298,14 @@ func main() {
 		})
 
 		collector := HostFactCollector{
-			Client:        client,
-			Logger:        logger,
-			RingConfig:    ringConfig,
-			CacheConfig:   cacheCfg,
-			TimeoutOffset: timeoutOffset.Seconds(),
-			Timeout:       collectorHostFactTimeout.Seconds(),
-			UseCache:      true,
+			Client:         client,
+			Logger:         logger,
+			RingConfig:     ringConfig,
+			CacheConfig:    cacheCfg,
+			TimeoutOffset:  timeoutOffset.Seconds(),
+			Timeout:        collectorHostFactTimeout.Seconds(),
+			UseCache:       true,
+			CacheOnPartial: *collectorHostFactCacheUpdateOnPartial,
 		}
 
 		http.HandleFunc("/host-facts-metrics", func(w http.ResponseWriter, req *http.Request) {
