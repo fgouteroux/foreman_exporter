@@ -214,6 +214,11 @@ func main() {
 
 		http.Handle("/ring", ringConfig.lifecycler)
 		http.Handle("/memberlist", memberlistStatusHandler("", ringConfig.memberlistsvc))
+
+		// Only the leader collects from foreman, so expose which role this
+		// instance holds to make the other metrics readable across replicas.
+		prometheus.MustRegister(ringLeaderLookupErrorsMetric)
+		prometheus.MustRegister(newNodeRoleCollector(ringConfig, logger))
 	} else if *cacheEnabled || *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
 		// Without the ring the collectors read localCache whenever their cache is
 		// enabled, including through the global --cache.enabled: not allocating it

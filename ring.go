@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -252,4 +253,63 @@ func ringLeader(r ring.ReadRing) (*ring.InstanceDesc, error) {
 	}
 
 	return &rs.Instances[0], nil
+}
+
+// Node roles reported by foreman_exporter_node_role.
+const (
+	nodeRoleUnknown  = 0
+	nodeRoleLeader   = 1
+	nodeRoleFollower = 2
+)
+
+var (
+	nodeRoleDesc = prometheus.NewDesc(
+		"foreman_exporter_node_role",
+		"Node role, 0 = unknown, 1 = leader, 2 = follower",
+		nil, nil,
+	)
+
+	ringLeaderLookupErrorsMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "foreman_exporter_ring_leader_lookup_errors_total",
+		Help: "A counter of failures to resolve the ring leader.",
+	})
+)
+
+// nodeRoleCollector exposes which role this instance holds in the ring. Only
+// the leader collects from foreman, so knowing who it is at any moment is what
+// makes the rest of the exporter's metrics readable across replicas.
+//
+// The role is resolved at scrape time rather than cached, so the metric can
+// never report a role the instance no longer holds. A ring that cannot be
+// resolved reports "unknown" rather than defaulting to follower: an unreachable
+// ring must not look like a healthy non-leader, otherwise a cluster left with
+// no leader at all would go unnoticed.
+type nodeRoleCollector struct {
+	leaderFn func() (bool, error)
+	logger   *slog.Logger
+}
+
+func newNodeRoleCollector(expRing ExporterRing, logger *slog.Logger) nodeRoleCollector {
+	return nodeRoleCollector{
+		leaderFn: func() (bool, error) { return isLeader(expRing) },
+		logger:   logger,
+	}
+}
+
+func (c nodeRoleCollector) Describe(ch chan<- *prometheus.Desc) { ch <- nodeRoleDesc }
+
+func (c nodeRoleCollector) Collect(ch chan<- prometheus.Metric) {
+	role := float64(nodeRoleUnknown)
+
+	switch isLeaderNow, err := c.leaderFn(); {
+	case err != nil:
+		ringLeaderLookupErrorsMetric.Inc()
+		c.logger.Warn("Failed to determine ring leader", "err", err)
+	case isLeaderNow:
+		role = nodeRoleLeader
+	default:
+		role = nodeRoleFollower
+	}
+
+	ch <- prometheus.MustNewConstMetric(nodeRoleDesc, prometheus.GaugeValue, role)
 }
