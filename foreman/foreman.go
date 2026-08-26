@@ -94,6 +94,9 @@ func init() {
 		histVecMetric,
 		inFlightGaugeMetric,
 		retryAfterMetric,
+		rateLimitWaitMetric,
+		rateLimitDelayedMetric,
+		rateLimitMetric,
 	)
 }
 
@@ -280,6 +283,12 @@ type ClientConfig struct {
 	RetryMax        int64
 	// RetryMaxWait caps the Retry-After delay honored on 429/503 (0 = no cap).
 	RetryMaxWait time.Duration
+	// RateLimit paces outgoing requests, in requests per second (0 = disabled).
+	// It bounds throughput, where Concurrency bounds parallelism: the two are
+	// independent, and which one binds depends on how fast foreman answers.
+	RateLimit float64
+	// RateLimitBurst is the token bucket depth. 0 derives it from RateLimit.
+	RateLimitBurst int64
 
 	Search               string
 	SearchHostFact       string
@@ -324,11 +333,17 @@ func NewHTTPClient(cfg ClientConfig) *HTTPClient {
 	transport := newTransport(cfg.SkipTLSVerify, resolveIdleConns(cfg.MaxConnsPerHost, cfg.Concurrency))
 
 	// Wrap the default RoundTripper with middleware.
-	roundTripper := promhttp.InstrumentRoundTripperInFlight(inFlightGaugeMetric,
+	var roundTripper http.RoundTripper = promhttp.InstrumentRoundTripperInFlight(inFlightGaugeMetric,
 		promhttp.InstrumentRoundTripperCounter(counterMetric,
 			promhttp.InstrumentRoundTripperDuration(histVecMetric, transport),
 		),
 	)
+
+	// The limiter goes outermost so the wait is excluded from the request
+	// duration histogram and from the in-flight gauge.
+	if limiter := newRateLimiter(cfg.RateLimit, cfg.RateLimitBurst); limiter != nil {
+		roundTripper = &rateLimitedRoundTripper{next: roundTripper, limiter: limiter}
+	}
 
 	client := retryablehttp.NewClient()
 	client.HTTPClient.Transport = roundTripper

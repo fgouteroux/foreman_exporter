@@ -46,6 +46,8 @@ var (
 	maxConnsPerHost = kingpin.Flag("foreman.max-conns-per-host", "Idle connections kept in the pool for the foreman host. Defaults to the concurrency (minimum 4).").Default("0").Int64()
 	retryMax        = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
 	retryMaxWait    = kingpin.Flag("foreman.retry-max-wait", "Cap on the Retry-After delay honored on rate-limit responses (0 to honor it as-is).").Default("60s").Duration()
+	rateLimit       = kingpin.Flag("foreman.rate-limit", "Max foreman requests per second, retries included (0 to disable). Set it just under the server-side quota: a quota of N requests per minute is N/60 here.").Default("0").Float64()
+	rateLimitBurst  = kingpin.Flag("foreman.rate-limit-burst", "Token bucket depth for --foreman.rate-limit. Defaults to one second worth of requests.").Default("0").Int64()
 	limit           = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
 	search          = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
 	timeoutOffset   = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
@@ -231,6 +233,8 @@ func main() {
 		Limit:                *limit,
 		RetryMax:             *retryMax,
 		RetryMaxWait:         *retryMaxWait,
+		RateLimit:            *rateLimit,
+		RateLimitBurst:       *rateLimitBurst,
 		Search:               *search,
 		SearchHostFact:       *collectorHostFactSearch,
 		IncludeHostFactRegex: *collectorHostFactIncludeRegex,
