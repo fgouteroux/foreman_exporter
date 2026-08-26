@@ -42,11 +42,13 @@ var (
 	password      = kingpin.Flag("password", "Foreman password").Envar("FOREMAN_PASSWORD").Required().String()
 	skipTLSVerify = kingpin.Flag("skip-tls-verify", "Foreman skip TLS verify.").Envar("FOREMAN_SKIP_TLS_VERIFY").Bool()
 
-	concurrency   = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
-	retryMax      = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
-	limit         = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
-	search        = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
-	timeoutOffset = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
+	concurrency     = kingpin.Flag("concurrency", "Max concurrent foreman client http request.").Default("4").Int64()
+	maxConnsPerHost = kingpin.Flag("foreman.max-conns-per-host", "Idle connections kept in the pool for the foreman host. Defaults to the concurrency (minimum 4).").Default("0").Int64()
+	retryMax        = kingpin.Flag("retry-max", "Max retries for foreman client http requests (honors the Retry-After header on rate-limit responses).").Default("3").Int64()
+	retryMaxWait    = kingpin.Flag("foreman.retry-max-wait", "Cap on the Retry-After delay honored on rate-limit responses (0 to honor it as-is).").Default("60s").Duration()
+	limit           = kingpin.Flag("limit", "Foreman client host limit search.").Default("0").Int64()
+	search          = kingpin.Flag("search", "Foreman client host search filter.").Default("").String()
+	timeoutOffset   = kingpin.Flag("timeout-offset", "Offset to subtract from Prometheus-supplied timeout.").Default("0.5s").Duration()
 
 	// Lock concurrent requests on collectors to avoid flooding foreman api with too many requests
 	collectorsLock = kingpin.Flag("collector.lock-concurrent-requests", "Lock concurrent requests on collectors.").Bool()
@@ -209,26 +211,31 @@ func main() {
 
 		http.Handle("/ring", ringConfig.lifecycler)
 		http.Handle("/memberlist", memberlistStatusHandler("", ringConfig.memberlistsvc))
-	} else if *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
+	} else if *cacheEnabled || *collectorHostFactCacheEnabled || *collectorHostCacheEnabled {
+		// Without the ring the collectors read localCache whenever their cache is
+		// enabled, including through the global --cache.enabled: not allocating it
+		// here left a nil map to be dereferenced on the first scrape.
 		localCache = memcache.NewLocalCache()
 	}
 
 	var collectorsInfo []collectorInfo
 
-	client := foreman.NewHTTPClient(
-		*baseURL,
-		*username,
-		*password,
-		*skipTLSVerify,
-		*concurrency,
-		*limit,
-		*retryMax,
-		*search,
-		*collectorHostFactSearch,
-		*collectorHostFactIncludeRegex,
-		*collectorHostFactExcludeRegex,
-		log,
-	)
+	client := foreman.NewHTTPClient(foreman.ClientConfig{
+		BaseURL:              *baseURL,
+		Username:             *username,
+		Password:             *password,
+		SkipTLSVerify:        *skipTLSVerify,
+		Concurrency:          *concurrency,
+		MaxConnsPerHost:      *maxConnsPerHost,
+		Limit:                *limit,
+		RetryMax:             *retryMax,
+		RetryMaxWait:         *retryMaxWait,
+		Search:               *search,
+		SearchHostFact:       *collectorHostFactSearch,
+		IncludeHostFactRegex: *collectorHostFactIncludeRegex,
+		ExcludeHostFactRegex: *collectorHostFactExcludeRegex,
+		Log:                  log,
+	})
 
 	if slices.Contains(*collectorsEnabled, "hostfact") {
 
