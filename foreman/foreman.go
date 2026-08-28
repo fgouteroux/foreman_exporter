@@ -185,13 +185,14 @@ type HTTPClient struct {
 
 	// BulkFacts collects facts through /api/v2/fact_values by batch of host ids
 	// instead of one request per host.
-	BulkFacts      bool
-	FactBatchSize  int64
-	FactPerPage    int64
-	FactMaxPages   int64
-	FactNames      []string
-	FactInOperator string
-	MaxURLLength   int
+	BulkFacts       bool
+	FactBatchSize   int64
+	FactPerPage     int64
+	FactMaxPages    int64
+	FactNames       []string
+	FactInOperator  string
+	MaxURLLength    int
+	HostListPerPage int64
 }
 
 // RequestCompletionCallback defines the type of the request callback function
@@ -329,6 +330,9 @@ type ClientConfig struct {
 	FactNames      []string
 	FactInOperator string
 	MaxURLLength   int
+	// HostListPerPage sizes the thin host list pages the fact collector walks
+	// before collecting anything. 0 uses the built-in default.
+	HostListPerPage int64
 
 	Log *logrus.Logger
 }
@@ -404,13 +408,14 @@ func NewHTTPClient(cfg ClientConfig) *HTTPClient {
 		ExcludeHostFactRegex: cfg.ExcludeHostFactRegex,
 		Log:                  cfg.Log,
 
-		BulkFacts:      cfg.BulkFacts,
-		FactBatchSize:  cfg.FactBatchSize,
-		FactPerPage:    cfg.FactPerPage,
-		FactMaxPages:   cfg.FactMaxPages,
-		FactNames:      SortedFactNames(cfg.FactNames),
-		FactInOperator: cfg.FactInOperator,
-		MaxURLLength:   cfg.MaxURLLength,
+		BulkFacts:       cfg.BulkFacts,
+		FactBatchSize:   cfg.FactBatchSize,
+		FactPerPage:     cfg.FactPerPage,
+		FactMaxPages:    cfg.FactMaxPages,
+		FactNames:       SortedFactNames(cfg.FactNames),
+		FactInOperator:  cfg.FactInOperator,
+		MaxURLLength:    cfg.MaxURLLength,
+		HostListPerPage: cfg.HostListPerPage,
 	}
 }
 
@@ -713,7 +718,11 @@ func (c *HTTPClient) pageCount(expected, perPage int64) int64 {
 	return int64(math.Ceil(float64(expected) / float64(perPage)))
 }
 
-func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string]string, error) {
+func (c *HTTPClient) GetHostsFactsFiltered() (map[string]map[string]string, error) {
+	perPage := c.HostListPerPage
+	if perPage <= 0 {
+		perPage = defaultHostListPerPage
+	}
 	if c.Limit != 0 && c.Limit < perPage {
 		perPage = int64(c.Limit)
 	}
@@ -738,13 +747,23 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	expected := expectedHosts(hostsFirstPage)
 	pages := c.pageCount(expected, effPerPage)
 
-	for page := hostsFirstPage.Page + 1; page <= pages; page++ {
-		hostsPage, err := c.GetHosts(ctx, "true", page, perPage)
-		if err != nil {
-			errMsg := fmt.Errorf("cannot get foreman hosts page (%d/%d) %v", page, pages, err)
-			return nil, errMsg
+	// Fetch the remaining pages in parallel. Walking them one at a time made the
+	// list cost pages x latency, which on a slow foreman dwarfed the collection
+	// that follows - the host collector has always fanned these out, the fact
+	// collector simply never did.
+	if pages > 1 {
+		rest := make([]int64, 0, pages-1)
+		for page := hostsFirstPage.Page + 1; page <= pages; page++ {
+			rest = append(rest, page)
 		}
-		hosts = append(hosts, hostsPage.Results...)
+		for _, item := range c.GetHostWithConcurrency("true", rest, perPage) {
+			if item.Error != nil {
+				// An incomplete host list means hosts missing from the facts
+				// entirely, so it stays fatal rather than collecting a subset.
+				return nil, fmt.Errorf("cannot get foreman hosts page (%d/%d) %v", item.Index+2, pages, item.Error)
+			}
+			hosts = append(hosts, item.Result.Results...)
+		}
 	}
 
 	listElapsed := time.Since(listStart)
@@ -805,7 +824,7 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 		pagesSlice = append(pagesSlice, i)
 	}
 
-	results := c.GetHostWithConcurrency(pagesSlice, perPage)
+	results := c.GetHostWithConcurrency("false", pagesSlice, perPage)
 
 	var hostResults []Host
 
@@ -833,7 +852,7 @@ func (c *HTTPClient) GetHostsFiltered(perPage int64) ([]Host, error) {
 // GetHostWithConcurrency sends requests in parallel but only up to a certain
 // limit, and furthermore it's only parallel up to the amount of CPUs but
 // is always concurrent up to the concurrency limit
-func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []HostWithConcurrencyResult {
+func (c *HTTPClient) GetHostWithConcurrency(thin string, pages []int64, perPage int64) []HostWithConcurrencyResult {
 
 	// this buffered channel will block at the concurrency limit
 	semaphoreChan := make(chan struct{}, c.Concurrency)
@@ -867,7 +886,7 @@ func (c *HTTPClient) GetHostWithConcurrency(pages []int64, perPage int64) []Host
 			// along with the index so we can sort them later along with
 			// any error that might have occured
 			ctx := context.Background()
-			res, err := c.GetHosts(ctx, "false", page, perPage)
+			res, err := c.GetHosts(ctx, thin, page, perPage)
 			result := &HostWithConcurrencyResult{i, res, err}
 
 			// now we can send the result struct through the resultsChan

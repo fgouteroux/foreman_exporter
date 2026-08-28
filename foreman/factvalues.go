@@ -101,6 +101,9 @@ var (
 const (
 	defaultFactPerPage  = 10000
 	defaultFactMaxPages = 10
+	// The thin host list carries only ids and names, so large pages stay small
+	// on the wire; what costs is the number of round trips.
+	defaultHostListPerPage = 5000
 )
 
 // BatchFactsResult is what one batch of host ids brought back. Facts holds the

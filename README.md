@@ -84,6 +84,8 @@ Flags:
                                  Exact fact names to select server-side (repeatable, or comma separated). Must be a superset of what 'collector.hostfact.include' keeps, otherwise facts are dropped before the regex ever sees them. Empty means no server-side name filter.
       --collector.hostfact.in-operator=^  
                                  scoped_search operator used to select host ids: '^' (in) or 'or'.
+      --collector.hostfact.host-list-per-page=5000  
+                                 per_page for the thin host list the fact collector walks before collecting. The list carries only ids and names, so what costs is the number of round trips, not the page size.
       --collector.hostfact.max-url-length=6000  
                                  Shrink a batch when its encoded search would exceed this many bytes.
       --[no-]cache.enabled       Enable cache for all collectors.
@@ -288,6 +290,15 @@ matters*:
 | response size | one host's facts | `batch-size x facts-per-host` rows, see the sizing rules below |
 | cost of one failure | one host missing | one batch missing |
 | cost of a retry | a full pass | a full pass, but a pass is now short |
+
+A collector pass is two phases: fetching the thin host list, then collecting the
+facts. Only the second is predictable, so they are timed separately -
+`foreman_exporter_host_facts_host_list_duration_seconds` against the collector's
+total. Timing them together makes a slow list look like slow facts, which sends
+you tuning batch sizes for a problem that is not there. The list pages are
+fetched in parallel and sized by `--collector.hostfact.host-list-per-page`; since
+they carry only ids and names, what costs is the number of round trips, not the
+page size.
 
 Two consequences worth planning for.
 

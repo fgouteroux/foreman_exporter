@@ -479,7 +479,7 @@ func TestGetHostsFactsFilteredDispatchesOnBulkFlag(t *testing.T) {
 		factValuesHits.Store(0)
 		perHostHits.Store(0)
 		c := bulkClient(t, ts, func(cfg *ClientConfig) { cfg.BulkFacts = bulk })
-		if _, err := c.GetHostsFactsFiltered(1000); err != nil {
+		if _, err := c.GetHostsFactsFiltered(); err != nil {
 			t.Fatalf("bulk=%v: %v", bulk, err)
 		}
 		if bulk && (factValuesHits.Load() == 0 || perHostHits.Load() != 0) {
@@ -517,7 +517,7 @@ func TestGetHostsFactsFilteredTimesTheHostListPhase(t *testing.T) {
 	defer ts.Close()
 
 	c := bulkClient(t, ts, nil)
-	if _, err := c.GetHostsFactsFiltered(1000); err != nil {
+	if _, err := c.GetHostsFactsFiltered(); err != nil {
 		t.Fatalf("GetHostsFactsFiltered returned error: %v", err)
 	}
 
@@ -527,5 +527,79 @@ func TestGetHostsFactsFilteredTimesTheHostListPhase(t *testing.T) {
 	}
 	if got > 5 {
 		t.Fatalf("host list duration = %vs, suspiciously high: it should not include the fact phase", got)
+	}
+}
+
+func TestGetHostsFactsFilteredFetchesListPagesInParallel(t *testing.T) {
+	// Walking the list one page at a time cost pages x latency, which on a slow
+	// foreman dwarfed the collection that follows. With 4 pages at 200ms each,
+	// sequential would take 800ms; in parallel it stays near one page.
+	const pageDelay = 200 * time.Millisecond
+	var listHits atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/fact_values") {
+			_, _ = w.Write([]byte(`{"total":0,"page":1,"per_page":1000,"results":{}}`))
+			return
+		}
+		listHits.Add(1)
+		time.Sleep(pageDelay)
+		var page int
+		fmt.Sscan(r.URL.Query().Get("page"), &page)
+		first := (page - 1) * 10
+		rows := make([]string, 0, 10)
+		for i := first; i < first+10 && i < 40; i++ {
+			rows = append(rows, fmt.Sprintf(`{"id":%d,"name":"host-%d"}`, i, i))
+		}
+		fmt.Fprintf(w, `{"total":40,"subtotal":40,"page":%d,"per_page":10,"results":[%s]}`, page, strings.Join(rows, ","))
+	}))
+	defer ts.Close()
+
+	c := bulkClient(t, ts, func(cfg *ClientConfig) {
+		cfg.HostListPerPage = 10 // 40 hosts -> 4 pages
+		cfg.Concurrency = 4
+	})
+
+	start := time.Now()
+	if _, err := c.GetHostsFactsFiltered(); err != nil {
+		t.Fatalf("GetHostsFactsFiltered returned error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if got := listHits.Load(); got != 4 {
+		t.Fatalf("list requests = %d, want 4 pages", got)
+	}
+	// Sequential would be 4 x 200ms; allow generous slack but not a full serial walk.
+	if elapsed > 600*time.Millisecond {
+		t.Fatalf("the list took %v, close to a sequential walk of 4 x %v", elapsed, pageDelay)
+	}
+}
+
+func TestGetHostsFactsFilteredFailsOnAnIncompleteList(t *testing.T) {
+	// A missing list page means hosts absent from the facts entirely, which is
+	// worse than no data at all, so it stays fatal rather than partial.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "3" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+			return
+		}
+		var page int
+		fmt.Sscan(r.URL.Query().Get("page"), &page)
+		first := (page - 1) * 10
+		rows := make([]string, 0, 10)
+		for i := first; i < first+10 && i < 40; i++ {
+			rows = append(rows, fmt.Sprintf(`{"id":%d,"name":"host-%d"}`, i, i))
+		}
+		fmt.Fprintf(w, `{"total":40,"subtotal":40,"page":%d,"per_page":10,"results":[%s]}`, page, strings.Join(rows, ","))
+	}))
+	defer ts.Close()
+
+	c := bulkClient(t, ts, func(cfg *ClientConfig) { cfg.HostListPerPage = 10 })
+	facts, err := c.GetHostsFactsFiltered()
+	if err == nil {
+		t.Fatal("GetHostsFactsFiltered returned nil error although a list page failed")
+	}
+	if facts != nil {
+		t.Fatalf("returned %d hosts on an incomplete list, want nothing", len(facts))
 	}
 }
