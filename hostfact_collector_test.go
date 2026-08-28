@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,5 +139,50 @@ func TestHostFactCollectorFallsBackToExpiredCache(t *testing.T) {
 	c.UseExpiredCache = false
 	if mf, ok := gather(t, c)["foreman_exporter_host_facts_info"]; ok {
 		t.Fatalf("expired cache served without --expired-cache: %d series", len(mf.GetMetric()))
+	}
+}
+
+func TestHostFactCollectorNoDataMessages(t *testing.T) {
+	// "cache is empty" is a conclusion the collector is only entitled to draw
+	// when it actually looked. With ?cache=false it never reads the cache, so
+	// saying it is empty is simply false.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"down"}`))
+	}))
+	defer ts.Close()
+
+	prev := localCache
+	localCache = memcache.NewLocalCache()
+	defer func() { localCache = prev }()
+	localCache.Set(hostsFactsKey, []map[string]string{{"name": "host-0"}}, -time.Minute)
+
+	tests := []struct {
+		name       string
+		cacheOn    bool
+		useCache   bool
+		wantSubstr string
+	}{
+		{name: "cache bypassed by the request", cacheOn: true, useCache: false, wantSubstr: "bypassed by the request"},
+		{name: "cache disabled", cacheOn: false, useCache: false, wantSubstr: "cache is disabled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			c := newHostFactCollector(t, ts)
+			c.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			c.CacheConfig = &cacheConfig{Enabled: tc.cacheOn, ExpiresTTL: time.Hour}
+			c.UseCache = tc.useCache
+
+			gather(t, c)
+
+			got := buf.String()
+			if strings.Contains(got, "cache is empty") {
+				t.Fatalf("logged %q; the collector never read the cache, so it cannot claim it is empty", got)
+			}
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Fatalf("logged %q, want it to mention %q", got, tc.wantSubstr)
+			}
+		})
 	}
 }
