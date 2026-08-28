@@ -231,14 +231,21 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 	// which may be expired, and only when the caller opted in. A scrape that
 	// succeeded for some hosts is served as-is, expired-cache flag untouched.
 	if !servedFromScrape && (errVal == 1 || scrapeTimeoutVal == 1) {
-		if c.CacheConfig.Enabled && c.UseExpiredCache && len(data) != 0 {
+		switch {
+		case c.CacheConfig.Enabled && c.UseExpiredCache && len(data) != 0:
 			expiredCacheVal = 1
 			c.Logger.Warn("use expired cache")
-		} else {
-			if len(data) == 0 {
-				c.Logger.Warn("cache is empty")
-			}
+		case len(data) != 0:
+			// There is a cached value but the caller did not ask for it.
 			data = nil
+		case !c.CacheConfig.Enabled:
+			c.Logger.Warn("no data to export: the scrape failed and the cache is disabled")
+		case !c.UseCache:
+			// The cache was never read, so nothing can be said about it: with
+			// ?cache=false the caller asked for a live scrape and it failed.
+			c.Logger.Warn("no data to export: the scrape failed and the cache was bypassed by the request")
+		default:
+			c.Logger.Warn("no data to export: the scrape failed and the cache is empty")
 		}
 	}
 

@@ -72,6 +72,20 @@ Flags:
                                  Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.
       --[no-]collector.hostfact.cache.update-on-partial  
                                  Update the host fact cache from a partial scrape (some hosts failed). Partial results are always exported; this only controls whether they are cached.
+      --[no-]collector.hostfact.bulk  
+                                 Collect host facts through /api/v2/fact_values, one request per batch of hosts, instead of one request per host. Enabled by default; use --no-collector.hostfact.bulk for the legacy per-host route. The other collector.hostfact.batch/per-page/max-pages/names/in-operator/max-url-length flags only apply in this mode.
+      --collector.hostfact.batch-size=20  
+                                 Host ids per fact_values request. Size it so batch x facts-per-host stays well under 'per-page': a response that fills a page is an order of magnitude slower.
+      --collector.hostfact.per-page=10000  
+                                 per_page for the fact_values requests.
+      --collector.hostfact.max-pages=10  
+                                 Max pages fetched for a single batch. A correctly sized batch fits in one page; hitting this limit means the facts are incomplete and is reported as an error.
+      --collector.hostfact.names=COLLECTOR.HOSTFACT.NAMES ...  
+                                 Exact fact names to select server-side (repeatable, or comma separated). Must be a superset of what 'collector.hostfact.include' keeps, otherwise facts are dropped before the regex ever sees them. Empty means no server-side name filter.
+      --collector.hostfact.in-operator=^  
+                                 scoped_search operator used to select host ids: '^' (in) or 'or'.
+      --collector.hostfact.max-url-length=6000  
+                                 Shrink a batch when its encoded search would exceed this many bytes.
       --[no-]cache.enabled       Enable cache for all collectors.
       --cache.ttl-expires=1h     Cache Expiration time for all collectors.
       --[no-]cache.compression   Enable zstd cache compression for all collectors in kvstore.
@@ -135,7 +149,40 @@ foreman_exporter_client_rate_limit_delayed_requests_total 7861
 # HELP foreman_exporter_client_rate_limit_wait_seconds_total Cumulative time foreman client requests spent waiting on the client-side rate limiter.
 # TYPE foreman_exporter_client_rate_limit_wait_seconds_total counter
 foreman_exporter_client_rate_limit_wait_seconds_total 18952.3
+# HELP foreman_exporter_client_fact_values_requests_total A counter for /api/v2/fact_values requests from the foreman client.
+# TYPE foreman_exporter_client_fact_values_requests_total counter
+foreman_exporter_client_fact_values_requests_total{status="success"} 421
 ```
+
+In bulk mode (see below) the host fact collector also reports how the batching
+went. The two that indicate degraded data are `..._batches_failed_total` and
+`..._batches_maxpages_total`; the others are there to size the batches.
+
+```
+# TYPE foreman_exporter_host_facts_batches_total counter
+foreman_exporter_host_facts_batches_total 421
+# TYPE foreman_exporter_host_facts_batches_failed_total counter
+foreman_exporter_host_facts_batches_failed_total 0
+# TYPE foreman_exporter_host_facts_batches_maxpages_total counter
+foreman_exporter_host_facts_batches_maxpages_total 0
+# TYPE foreman_exporter_host_facts_hosts_lost_total counter
+foreman_exporter_host_facts_hosts_lost_total 0
+# TYPE foreman_exporter_host_facts_hosts_without_facts gauge
+foreman_exporter_host_facts_hosts_without_facts 85
+# TYPE foreman_exporter_host_facts_pages_continued_total counter
+foreman_exporter_host_facts_pages_continued_total 0
+# TYPE foreman_exporter_host_facts_per_page_clamped_total counter
+foreman_exporter_host_facts_per_page_clamped_total 0
+# TYPE foreman_exporter_host_facts_page_rows histogram
+# TYPE foreman_exporter_host_facts_page_fill_ratio histogram
+# TYPE foreman_exporter_host_facts_batch_hosts histogram
+```
+
+`..._batches_failed_total` and `..._batches_maxpages_total` are the two to alert
+on, as a ratio over `..._batches_total`. `..._hosts_without_facts` is expected to
+be non-zero — hosts that never reported, or whose facts do not match the search —
+what matters is that it does not jump. `..._batch_hosts` catches a silent
+collapse towards one host per batch, which would quietly undo the whole feature.
 
 `--foreman.rate-limit` is expressed in requests per **second**, while server-side
 quotas are usually stated per minute: a quota of 1000 requests per minute is
@@ -220,6 +267,105 @@ foreman_exporter_host_facts_scrape_timeout 1
 foreman_exporter_host_facts_use_expired_cache 1
 ```
 
+#### Host fact collection: the two modes
+
+`/api/v2/hosts/:id/facts` and `/api/v2/fact_values` are the same controller action
+in foreman: the per-host route only appends `host = <id>` to the search. Asking
+for one host per request is therefore a choice, not a constraint, and on a fleet
+of a few thousand hosts it is the dominant cost of the collector.
+
+Both modes return the same facts and both apply
+`--collector.hostfact.include` / `--collector.hostfact.exclude` to decide the
+exported labels. What differs is the request count, and with it *which knob
+matters*:
+
+| | per-host (`--no-collector.hostfact.bulk`) | bulk (default) |
+|---|---|---|
+| requests per pass | one per host, plus the host list | one per batch of `batch-size` hosts |
+| what bounds a pass | `concurrency / latency` | the request count, then per-request cost |
+| `--concurrency` | **the only lever**: throughput is exactly `concurrency / latency`, so a slow foreman is paid for on every host | much less sensitive, but still real: at the default batch size a few thousand hosts is a few hundred requests, so leaving `--concurrency` at 4 still costs many waves |
+| `--foreman.rate-limit` | usually the binding constraint — thousands of requests against a per-minute quota sets a hard floor on the pass | rarely reached |
+| response size | one host's facts | `batch-size x facts-per-host` rows, see the sizing rules below |
+| cost of one failure | one host missing | one batch missing |
+| cost of a retry | a full pass | a full pass, but a pass is now short |
+
+Two consequences worth planning for.
+
+In **per-host** mode the pass duration is dominated by foreman's per-request
+latency, which is outside your control: raising `--concurrency` is the only
+response, and it pushes back on a server that is already slow. This is the mode
+to keep if you need the search sent to foreman to stay byte-for-byte what it is
+today.
+
+In **bulk** mode a failure costs a whole batch instead of a single host, so the
+blast radius is larger — but the pass is short enough that not caching a partial
+result and letting the next scrape retry becomes the cheap option rather than an
+hour of stale cache. Keep `--collector.hostfact.cache.update-on-partial` off, and
+consider `--collector.lock-concurrent-requests` so two passes cannot overlap
+while the cache is expired.
+
+With `--collector.hostfact.bulk` the collector asks for a batch of host ids at a
+time:
+
+```
+GET /api/v2/fact_values?page=1&per_page=10000
+    &search=(<hostfact.search>) and host_id ^ (id1, id2, ... idN)
+```
+
+Three things decide the batch size, and the first one is not obvious:
+
+- **The defaults assume roughly 250 facts per host.** `batch-size=20` against
+  `per-page=10000` leaves a comfortable margin there; a fleet reporting 500 facts
+  per host would fill every page and pay the expensive path on every batch.
+  Measure yours and size accordingly — `foreman_exporter_host_facts_page_fill_ratio`
+  shows how close you are without needing to know the configured `per-page`.
+- **Rows, not hosts, drive the cost.** A request stays cheap as long as it brings
+  back a few thousand fact rows, and gets an order of magnitude slower once the
+  response fills a page. Keep `batch-size x facts-per-host` well under
+  `per-page`; raising `per-page` to fit a bigger batch trades a cheap request
+  for an expensive one.
+- **A full page means the result was cut.** The collector then fetches the next
+  page and merges it, so nothing is lost — but it pays the expensive path, and
+  `foreman_exporter_host_facts_pages_continued_total` counts it. Beyond
+  `--collector.hostfact.max-pages` it gives up: that batch is reported as an
+  error and **none of its hosts are exported**, because pagination cuts on fact
+  rows and its hosts may be missing some. Facts are const labels, so a shorter
+  label set is a *different* series rather than a smaller one — dropping the
+  batch for one pass is recoverable, silently replacing series is not.
+  `foreman_exporter_host_facts_batches_maxpages_total` counts that case, and it
+  is the one to alert on.
+- **The search must fit in the request line.** Batches are shrunk automatically
+  to stay under `--collector.hostfact.max-url-length`.
+
+`--collector.hostfact.in-operator` selects how the host ids are written into the
+search. `^` is scoped_search's *in* operator and is what you want:
+
+```
+^     host_id ^ (101, 102, 103)                              -> host_id IN (...)
+or    (host_id = 101 or host_id = 102 or host_id = 103)
+```
+
+The `or` fallback exists because `^` belongs to foreman's search layer rather
+than to its documented API surface, so nothing promises it across versions. It
+produces the same result but is two to three times longer once encoded — for
+six-digit host ids, a batch of 250 encodes to roughly 2.9 KB with `^` against
+7.4 KB with `or`, against a request line usually capped at 8 KB. Batches are
+shrunk automatically to stay under `--collector.hostfact.max-url-length`, so the
+fallback costs more requests rather than breaking.
+
+Only switch if the server rejects the operator — a `400` with a message about an
+unrecognised field or a parse error. There is no other reason to prefer `or`.
+
+`--collector.hostfact.names` pushes the fact-name selection to the server instead
+of downloading every fact and discarding most of them client-side. It cuts both
+the response size and the request cost, but it composes with
+`--collector.hostfact.include` as an **intersection**: a fact absent from the
+server-side list never reaches the regex. Keep the list a superset of what the
+regex keeps, or leave it empty.
+
+`--collector.hostfact.include` and `--collector.hostfact.exclude` still define the
+exported label set in both modes; the server-side filter is only an optimisation.
+
 #### Partial results
 
 A collector scrape can fail for some hosts and succeed for the rest: a few hosts
@@ -233,6 +379,13 @@ Two consequences for anything alerting on these collectors:
   going to `1` no longer implies that the series disappeared. They mean *some*
   hosts are missing, not *all*. Alert on the series count too if you need to
   catch a total outage.
+- In bulk mode a whole batch is missing rather than a single host, so the blast
+  radius of one failure is larger. A batch is never exported half-collected
+  though: a failed or truncated batch drops all of its hosts rather than export
+  them with an amputated set of facts, which would silently create a different
+  series for each. `foreman_exporter_host_facts_hosts_lost_total` counts the
+  hosts this costs, and it is not reconstructable from the batch counters since
+  batches are shrunk to fit the request line.
 - The host list is paginated on the `subtotal` foreman reports for the search,
   so a short read is detected: collecting fewer hosts than announced also raises
   `foreman_exporter_host_scrape_error`, and the hosts that were collected are

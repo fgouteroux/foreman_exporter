@@ -97,6 +97,18 @@ func init() {
 		rateLimitWaitMetric,
 		rateLimitDelayedMetric,
 		rateLimitMetric,
+		factValuesHistVecMetric,
+		factValuesCounterMetric,
+		factValuesRowsMetric,
+		factValuesPagesContinuedMetric,
+		factValuesPageFillMetric,
+		factValuesClampedMetric,
+		factValuesBatchesMetric,
+		factValuesBatchFailedMetric,
+		factValuesMaxPagesMetric,
+		factValuesHostsLostMetric,
+		factValuesNoFactsMetric,
+		factValuesBatchHostsMetric,
 	)
 }
 
@@ -169,6 +181,16 @@ type HTTPClient struct {
 	IncludeHostFactRegex *regexp.Regexp
 	ExcludeHostFactRegex *regexp.Regexp
 	Log                  *logrus.Logger
+
+	// BulkFacts collects facts through /api/v2/fact_values by batch of host ids
+	// instead of one request per host.
+	BulkFacts      bool
+	FactBatchSize  int64
+	FactPerPage    int64
+	FactMaxPages   int64
+	FactNames      []string
+	FactInOperator string
+	MaxURLLength   int
 }
 
 // RequestCompletionCallback defines the type of the request callback function
@@ -295,6 +317,18 @@ type ClientConfig struct {
 	IncludeHostFactRegex *regexp.Regexp
 	ExcludeHostFactRegex *regexp.Regexp
 
+	// BulkFacts switches the host fact collection to /api/v2/fact_values, one
+	// request per batch of host ids. FactNames, when set, pushes the fact-name
+	// selection to the server instead of downloading everything and filtering
+	// it away client-side.
+	BulkFacts      bool
+	FactBatchSize  int64
+	FactPerPage    int64
+	FactMaxPages   int64
+	FactNames      []string
+	FactInOperator string
+	MaxURLLength   int
+
 	Log *logrus.Logger
 }
 
@@ -368,6 +402,14 @@ func NewHTTPClient(cfg ClientConfig) *HTTPClient {
 		IncludeHostFactRegex: cfg.IncludeHostFactRegex,
 		ExcludeHostFactRegex: cfg.ExcludeHostFactRegex,
 		Log:                  cfg.Log,
+
+		BulkFacts:      cfg.BulkFacts,
+		FactBatchSize:  cfg.FactBatchSize,
+		FactPerPage:    cfg.FactPerPage,
+		FactMaxPages:   cfg.FactMaxPages,
+		FactNames:      SortedFactNames(cfg.FactNames),
+		FactInOperator: cfg.FactInOperator,
+		MaxURLLength:   cfg.MaxURLLength,
 	}
 }
 
@@ -443,11 +485,37 @@ func (c *HTTPClient) logWarn(msg string, fields logrus.Fields) {
 	c.Log.WithFields(fields).Warn(msg)
 }
 
+func (c *HTTPClient) logDebugf(format string, args ...interface{}) {
+	if c.Log == nil {
+		return
+	}
+	c.Log.Debugf(format, args...)
+}
+
 func (c *HTTPClient) logInfof(format string, args ...interface{}) {
 	if c.Log == nil {
 		return
 	}
 	c.Log.Infof(format, args...)
+}
+
+// newJSONRequest builds an authenticated GET expecting JSON.
+func newJSONRequest(ctx context.Context, rawURL, user, pass string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(user, pass)
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	return req, nil
+}
+
+// unmarshalErrorResult decodes the foreman error body carried by err. It
+// returns a non-nil error when the body is not the JSON error envelope, which
+// is the case for transport failures and exhausted retries.
+func unmarshalErrorResult(err error, out *ErrorResult) error {
+	return json.Unmarshal([]byte(err.Error()), out)
 }
 
 func (c *HTTPClient) GetHosts(ctx context.Context, thin string, page, perPage int64) (HostResponse, error) {
@@ -677,6 +745,10 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 	hostsTotal := len(hosts)
 	c.logInfof("found %d hosts", hostsTotal)
 
+	if c.BulkFacts {
+		return c.getHostsFactsBulk(ctx, hosts)
+	}
+
 	results := c.GetHostFactsWithConcurrency(hosts)
 
 	var errCount int
@@ -688,24 +760,7 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 		}
 
 		for name, data := range item.Result.Results {
-			factsMap := make(map[string]string)
-
-			for k, v := range data {
-
-				if c.IncludeHostFactRegex != nil && len(c.IncludeHostFactRegex.FindStringSubmatch(k)) == 0 {
-					continue
-				}
-
-				if c.ExcludeHostFactRegex != nil && len(c.ExcludeHostFactRegex.FindStringSubmatch(k)) != 0 {
-					continue
-				}
-
-				if v != "" {
-					factsMap[k] = v
-				}
-			}
-
-			hostsFacts[name] = factsMap
+			hostsFacts[name] = c.filterFacts(data)
 		}
 	}
 

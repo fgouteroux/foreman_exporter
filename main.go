@@ -73,6 +73,14 @@ var (
 	collectorHostFactCacheExpiresTTL         = kingpin.Flag("collector.hostfact.cache.ttl-expires", "Host fact cache expiration time, if omitted, inherit from global 'cache.ttl-expires'.").Duration()
 	collectorHostFactCacheUpdateOnPartial    = kingpin.Flag("collector.hostfact.cache.update-on-partial", "Update the host fact cache from a partial scrape (some hosts failed). Partial results are always exported; this only controls whether they are cached.").Bool()
 
+	collectorHostFactBulk         = kingpin.Flag("collector.hostfact.bulk", "Collect host facts through /api/v2/fact_values, one request per batch of hosts, instead of one request per host. Enabled by default; use --no-collector.hostfact.bulk for the legacy per-host route. The other collector.hostfact.batch/per-page/max-pages/names/in-operator/max-url-length flags only apply in this mode.").Default("true").Bool()
+	collectorHostFactBatchSize    = kingpin.Flag("collector.hostfact.batch-size", "Host ids per fact_values request. Size it so batch x facts-per-host stays well under 'per-page': a response that fills a page is an order of magnitude slower.").Default("20").Int64()
+	collectorHostFactPerPage      = kingpin.Flag("collector.hostfact.per-page", "per_page for the fact_values requests.").Default("10000").Int64()
+	collectorHostFactMaxPages     = kingpin.Flag("collector.hostfact.max-pages", "Max pages fetched for a single batch. A correctly sized batch fits in one page; hitting this limit means the facts are incomplete and is reported as an error.").Default("10").Int64()
+	collectorHostFactNames        = kingpin.Flag("collector.hostfact.names", "Exact fact names to select server-side (repeatable, or comma separated). Must be a superset of what 'collector.hostfact.include' keeps, otherwise facts are dropped before the regex ever sees them. Empty means no server-side name filter.").Strings()
+	collectorHostFactInOperator   = kingpin.Flag("collector.hostfact.in-operator", "scoped_search operator used to select host ids: '^' (in) or 'or'.").Default("^").Enum("^", "or")
+	collectorHostFactMaxURLLength = kingpin.Flag("collector.hostfact.max-url-length", "Shrink a batch when its encoded search would exceed this many bytes.").Default("6000").Int()
+
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache for all collectors.").Bool()
 	cacheExpiresTTL         = kingpin.Flag("cache.ttl-expires", "Cache Expiration time for all collectors.").Default("1h").Duration()
 	cacheCompressionEnabled = kingpin.Flag("cache.compression", "Enable zstd cache compression for all collectors in kvstore.").Bool()
@@ -102,6 +110,20 @@ type cacheConfig struct {
 	Enabled     bool
 	Compression bool
 	ExpiresTTL  time.Duration
+}
+
+// splitCommaList flattens a repeatable flag that also accepts comma separated
+// values, so both --flag=a --flag=b and --flag=a,b work.
+func splitCommaList(in []string) []string {
+	var out []string
+	for _, v := range in {
+		for _, part := range strings.Split(v, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 func formatFilePath(path string) string {
@@ -240,6 +262,13 @@ func main() {
 		RetryMaxWait:         *retryMaxWait,
 		RateLimit:            *rateLimit,
 		RateLimitBurst:       *rateLimitBurst,
+		BulkFacts:            *collectorHostFactBulk,
+		FactBatchSize:        *collectorHostFactBatchSize,
+		FactPerPage:          *collectorHostFactPerPage,
+		FactMaxPages:         *collectorHostFactMaxPages,
+		FactNames:            splitCommaList(*collectorHostFactNames),
+		FactInOperator:       *collectorHostFactInOperator,
+		MaxURLLength:         *collectorHostFactMaxURLLength,
 		Search:               *search,
 		SearchHostFact:       *collectorHostFactSearch,
 		IncludeHostFactRegex: *collectorHostFactIncludeRegex,
