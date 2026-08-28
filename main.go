@@ -79,6 +79,7 @@ var (
 	collectorHostFactMaxPages     = kingpin.Flag("collector.hostfact.max-pages", "Max pages fetched for a single batch. A correctly sized batch fits in one page; hitting this limit means the facts are incomplete and is reported as an error.").Default("10").Int64()
 	collectorHostFactNames        = kingpin.Flag("collector.hostfact.names", "Exact fact names to select server-side (repeatable, or comma separated). Must be a superset of what 'collector.hostfact.include' keeps, otherwise facts are dropped before the regex ever sees them. Empty means no server-side name filter.").Strings()
 	collectorHostFactInOperator   = kingpin.Flag("collector.hostfact.in-operator", "scoped_search operator used to select host ids: '^' (in) or 'or'.").Default("^").Enum("^", "or")
+	collectorHostFactListPerPage  = kingpin.Flag("collector.hostfact.host-list-per-page", "per_page for the thin host list the fact collector walks before collecting. The list carries only ids and names, so what costs is the number of round trips, not the page size.").Default("5000").Int64()
 	collectorHostFactMaxURLLength = kingpin.Flag("collector.hostfact.max-url-length", "Shrink a batch when its encoded search would exceed this many bytes.").Default("6000").Int()
 
 	cacheEnabled            = kingpin.Flag("cache.enabled", "Enable cache for all collectors.").Bool()
@@ -269,6 +270,7 @@ func main() {
 		FactNames:            splitCommaList(*collectorHostFactNames),
 		FactInOperator:       *collectorHostFactInOperator,
 		MaxURLLength:         *collectorHostFactMaxURLLength,
+		HostListPerPage:      *collectorHostFactListPerPage,
 		Search:               *search,
 		SearchHostFact:       *collectorHostFactSearch,
 		IncludeHostFactRegex: *collectorHostFactIncludeRegex,

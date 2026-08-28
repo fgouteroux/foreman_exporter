@@ -162,7 +162,7 @@ func (c HostFactCollector) Collect(ch chan<- prometheus.Metric) {
 			// could collect alongside the error, and throwing that away meant a
 			// single rate-limited host wasted the whole (multi-minute) scrape and
 			// left the exporter with no series at all.
-			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered(1000)
+			hostsFacts, hostsFactsError := c.Client.GetHostsFactsFiltered()
 			if hostsFactsError != nil {
 				errVal = 1
 				c.Logger.Error("Failed to get hosts facts filtered", "err", hostsFactsError)

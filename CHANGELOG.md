@@ -1,3 +1,8 @@
+## 1.4.1 / 2026-08-28
+
+* [ENHANCEMENT] fetch the fact collector's host list pages in parallel and size them with `--collector.hostfact.host-list-per-page` (default 5000, was 1000 hard-coded and sequential). The list carries only ids and names, so what costs is the number of round trips: on a fleet of a few thousand hosts against a slow foreman, the list alone could take longer than the collection that follows. The host collector had always fanned these out; the fact collector simply never did
+* [FEATURE] add `foreman_exporter_host_facts_host_list_duration_seconds`, and log how long the host list took. The collector's total duration is the host list plus the fact collection, and only the second half is predictable: timing them together makes a slow list look like slow facts, which sends you tuning batch sizes for a problem that is not there
+
 ## 1.4.0 / 2026-08-28
 
 **Upgrade note.** The host fact collector now uses `/api/v2/fact_values` by default. Both routes are the same controller action in foreman, so the facts returned are identical, but the query uses scoped_search's `^` (in) operator to select host ids — which belongs to foreman's search layer rather than its documented API surface. If your foreman rejects it the collector will return `400`s right after the upgrade, with no configuration change on your side. Two ways back: `--collector.hostfact.in-operator=or` keeps the bulk mode with a longer but more conservative query, and `--no-collector.hostfact.bulk` restores the previous per-host behaviour entirely.
