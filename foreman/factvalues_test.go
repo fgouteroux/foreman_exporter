@@ -487,3 +487,13 @@ func TestGetHostsFactsFilteredDispatchesOnBulkFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinCapped(t *testing.T) {
+	all := []string{"a", "b", "c"}
+	if got := joinCapped(all, 5); got != "a, b, c" {
+		t.Fatalf("joinCapped under the cap = %q, want the full list", got)
+	}
+	if got := joinCapped(all, 2); got != "a, b and 1 more" {
+		t.Fatalf("joinCapped over the cap = %q, want the count of what was left out", got)
+	}
+}
