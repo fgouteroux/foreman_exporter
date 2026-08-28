@@ -79,6 +79,10 @@ var (
 		Name: "foreman_exporter_host_facts_hosts_lost_total",
 		Help: "A counter of hosts whose facts could not be collected because their batch failed or was truncated. Not reconstructable from the batch counters, since batches are shrunk to fit the request line.",
 	})
+	hostListDurationMetric = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "foreman_exporter_host_facts_host_list_duration_seconds",
+		Help: "Duration of the thin host list fetch that precedes the fact collection. The collector's total duration is this plus the fact phase; without the split, a slow list is indistinguishable from slow facts.",
+	})
 	factValuesNoFactsMetric = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "foreman_exporter_host_facts_hosts_without_facts",
 		Help: "Hosts that were asked for and came back with no matching fact on the last collection. Expected for hosts that never reported; a jump means facts stopped matching the search.",

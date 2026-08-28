@@ -108,6 +108,7 @@ func init() {
 		factValuesMaxPagesMetric,
 		factValuesHostsLostMetric,
 		factValuesNoFactsMetric,
+		hostListDurationMetric,
 		factValuesBatchHostsMetric,
 	)
 }
@@ -717,6 +718,10 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 		perPage = int64(c.Limit)
 	}
 
+	// The collector's duration is the host list plus the facts. The facts phase
+	// is predictable; the list is not, and can dominate the total on its own, so
+	// the two are timed separately or a slow list looks like slow facts.
+	listStart := time.Now()
 	ctx := context.Background()
 	hostsFirstPage, err := c.GetHosts(ctx, "true", 1, perPage)
 	if err != nil {
@@ -742,8 +747,11 @@ func (c *HTTPClient) GetHostsFactsFiltered(perPage int64) (map[string]map[string
 		hosts = append(hosts, hostsPage.Results...)
 	}
 
+	listElapsed := time.Since(listStart)
+	hostListDurationMetric.Set(listElapsed.Seconds())
+
 	hostsTotal := len(hosts)
-	c.logInfof("found %d hosts", hostsTotal)
+	c.logInfof("found %d hosts in %s", hostsTotal, listElapsed.Round(time.Millisecond))
 
 	if c.BulkFacts {
 		return c.getHostsFactsBulk(ctx, hosts)

@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func bulkClient(t *testing.T, ts *httptest.Server, cfg func(*ClientConfig)) *HTTPClient {
@@ -495,5 +498,34 @@ func TestJoinCapped(t *testing.T) {
 	}
 	if got := joinCapped(all, 2); got != "a, b and 1 more" {
 		t.Fatalf("joinCapped over the cap = %q, want the count of what was left out", got)
+	}
+}
+
+func TestGetHostsFactsFilteredTimesTheHostListPhase(t *testing.T) {
+	// The collector's duration is the host list plus the facts. Timing them
+	// together makes a slow list look like slow facts, which is exactly the
+	// wrong conclusion to draw when sizing batches.
+	delay := 150 * time.Millisecond
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/fact_values") {
+			_, _ = w.Write([]byte(`{"total":1,"page":1,"per_page":1000,"results":{"host-1":{"a":"1"}}}`))
+			return
+		}
+		time.Sleep(delay) // the slow phase
+		_, _ = w.Write([]byte(`{"total":1,"subtotal":1,"page":1,"per_page":1000,"results":[{"id":1,"name":"host-1"}]}`))
+	}))
+	defer ts.Close()
+
+	c := bulkClient(t, ts, nil)
+	if _, err := c.GetHostsFactsFiltered(1000); err != nil {
+		t.Fatalf("GetHostsFactsFiltered returned error: %v", err)
+	}
+
+	got := testutil.ToFloat64(hostListDurationMetric)
+	if got < delay.Seconds() {
+		t.Fatalf("host list duration = %vs, want at least the %v the list took", got, delay)
+	}
+	if got > 5 {
+		t.Fatalf("host list duration = %vs, suspiciously high: it should not include the fact phase", got)
 	}
 }
