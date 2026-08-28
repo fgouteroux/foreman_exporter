@@ -321,6 +321,14 @@ func (c *HTTPClient) GetFactValuesBatch(ctx context.Context, hosts []Host) Batch
 	return res
 }
 
+// joinCapped renders at most n names, saying how many it left out.
+func joinCapped(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:n], ", "), len(names)-n)
+}
+
 // missingHosts returns the names of the hosts that were asked for but carry no
 // fact in the response.
 func missingHosts(hosts []Host, facts map[string]map[string]string) []string {
@@ -407,7 +415,10 @@ func (c *HTTPClient) getHostsFactsBulk(ctx context.Context, hosts []Host) (map[s
 			// an error. What matters is being able to see it move.
 			noFacts += len(res.Missing)
 			if len(res.Missing) > 0 {
-				c.logDebugf("%d hosts in this batch have no matching fact, first: %s", len(res.Missing), res.Missing[0])
+				// Name them: the gauge says the number moved, only the names say
+				// which hosts to go and look at. Capped so one bad batch cannot
+				// flood the log with a whole fleet.
+				c.logDebugf("%d hosts have no matching fact: %s", len(res.Missing), joinCapped(res.Missing, 20))
 			}
 			for name, facts := range res.Facts {
 				hostsFacts[name] = c.filterFacts(facts)
